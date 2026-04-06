@@ -266,9 +266,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rhombus/react@workspace:.":
+"@rhombussystems/react@workspace:.":
   version: 0.0.0-use.local
-  resolution: "@rhombus/react@workspace:."
+  resolution: "@rhombussystems/react@workspace:."
   dependencies:
     "@types/react": "npm:^18.3.12"
     "@types/react-dom": "npm:^18.3.1"

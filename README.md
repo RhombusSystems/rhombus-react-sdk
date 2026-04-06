@@ -1,4 +1,4 @@
-# Rhombus React SDK (`@rhombus/react`)
+# Rhombus React SDK (`@rhombussystems/react`)
 
 React + TypeScript library for streaming Rhombus cameras over MPEG-DASH (Dash.js) using **federated session tokens** and a **backend proxy** (your API token must never ship to the browser).
 
@@ -20,7 +20,7 @@ npm publish --access public
 ## Quick start (consumers)
 
 ```tsx
-import { RhombusPlayer } from "@rhombus/react";
+import { RhombusPlayer } from "@rhombussystems/react";
 
 export function CameraView() {
   return (
@@ -58,7 +58,7 @@ cp .env.example .env
 yarn dev
 ```
 
-The example links `@rhombus/react` via `file:../rhombus-react-sdk` and Vite aliases to this repo’s `src/` for fast HMR. It is **private** and **not** published.
+The example links `@rhombussystems/react` via `file:../rhombus-react-sdk` and Vite aliases to this repo’s `src/` for fast HMR. It is **private** and **not** published.
 
 ## License
 

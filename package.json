@@ -1,5 +1,5 @@
 {
-  "name": "@rhombus/react",
+  "name": "@rhombussystems/react",
   "version": "0.1.0",
   "description": "React components for Rhombus camera streaming (DASH via Dash.js)",
   "license": "MIT",
