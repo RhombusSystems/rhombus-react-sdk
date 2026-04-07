@@ -1,44 +1,28 @@
 import { useEffect, useRef } from "react";
-import {
-  MediaPlayer,
-  type ErrorEvent as DashJSErrorEvent,
-  type MediaPlayerClass,
-} from "dashjs";
-import { getDefaultRhombusDashSettings } from "./dashSettings.js";
+import type { ErrorEvent as DashJSErrorEvent, MediaPlayerClass } from "dashjs";
 import type { RhombusPlayerProps } from "./types.js";
-import { appendFederatedAuthQueryParams, joinUrl } from "./urlAuth.js";
+import {
+  createRhombusDashPlayer,
+  DEFAULT_RHOMBUS_API_BASE_URL,
+  destroyRhombusDashPlayer,
+  fetchFederatedSessionToken,
+  fetchWanLiveMpdUriDirect,
+  fetchWanLiveMpdUriViaOverride,
+  getBrowserOrigin,
+  mergeRequestHeaders,
+} from "./rhombusPlayback.js";
+import { joinUrl } from "./urlAuth.js";
 
-const DEFAULT_PATHS = {
-  federatedToken: "/api/federated-token",
-  mediaUris: "/api/media-uris",
-} as const;
-
-async function mergeRequestHeaders(
-  headers: HeadersInit | undefined,
-  getRequestHeaders: RhombusPlayerProps["getRequestHeaders"]
-): Promise<HeadersInit> {
-  const out = new Headers({
-    "Content-Type": "application/json",
-    Accept: "application/json",
-  });
-  if (headers) {
-    new Headers(headers).forEach((value, key) => {
-      out.set(key, value);
-    });
-  }
-  if (getRequestHeaders) {
-    const extra = await getRequestHeaders();
-    new Headers(extra).forEach((value, key) => {
-      out.set(key, value);
-    });
-  }
-  return out;
-}
+const DEFAULT_FEDERATED_PATH = "/api/federated-token";
+const DEFAULT_MEDIA_PATH_OVERRIDE = "/api/media-uris";
+const DEFAULT_MEDIA_PATH_DIRECT = "/camera/getMediaUris";
 
 export function RhombusPlayer({
   cameraUuid,
-  proxyBaseUrl,
+  apiOverrideBaseUrl,
+  rhombusApiBaseUrl,
   paths,
+  federatedSessionToken,
   tokenDurationSec = 86_400,
   headers,
   getRequestHeaders,
@@ -60,8 +44,16 @@ export function RhombusPlayer({
   headersRef.current = headers;
   getRequestHeadersRef.current = getRequestHeaders;
 
-  const federatedPath = paths?.federatedToken ?? DEFAULT_PATHS.federatedToken;
-  const mediaPath = paths?.mediaUris ?? DEFAULT_PATHS.mediaUris;
+  const overrideBase = apiOverrideBaseUrl?.trim() || undefined;
+  const useDirectRhombusApi = overrideBase === undefined;
+  const federatedPath = paths?.federatedToken ?? DEFAULT_FEDERATED_PATH;
+  const mediaPath = useDirectRhombusApi
+    ? paths?.mediaUris ?? DEFAULT_MEDIA_PATH_DIRECT
+    : paths?.mediaUris ?? DEFAULT_MEDIA_PATH_OVERRIDE;
+  const usedDefaultFederatedPath = paths?.federatedToken === undefined;
+  const usedDefaultMediaPath = paths?.mediaUris === undefined;
+  const resolvedRhombusBase =
+    rhombusApiBaseUrl?.trim() || DEFAULT_RHOMBUS_API_BASE_URL;
 
   useEffect(() => {
     const video = videoRef.current;
@@ -86,46 +78,39 @@ export function RhombusPlayer({
           getRequestHeadersRef.current
         );
 
-        const tokenRes = await fetch(joinUrl(proxyBaseUrl, federatedPath), {
-          method: "POST",
-          headers: requestHeaders,
-          body: JSON.stringify({ durationSec: tokenDurationSec }),
-        });
-        if (!tokenRes.ok) {
-          throw new Error(
-            `Federated token request failed: ${tokenRes.status} ${tokenRes.statusText}`
+        let resolvedToken: string;
+        if (federatedSessionToken !== undefined) {
+          if (!federatedSessionToken) {
+            throw new Error("federatedSessionToken must be a non-empty string");
+          }
+          resolvedToken = federatedSessionToken;
+        } else {
+          const tokenUrl = useDirectRhombusApi
+            ? joinUrl(getBrowserOrigin(), federatedPath)
+            : joinUrl(overrideBase!, federatedPath);
+          resolvedToken = await fetchFederatedSessionToken(
+            tokenUrl,
+            requestHeaders,
+            tokenDurationSec,
+            usedDefaultFederatedPath
           );
         }
-        const tokenJson: unknown = await tokenRes.json();
-        const federatedSessionToken =
-          typeof tokenJson === "object" &&
-          tokenJson !== null &&
-          "federatedSessionToken" in tokenJson &&
-          typeof (tokenJson as { federatedSessionToken: unknown }).federatedSessionToken === "string"
-            ? (tokenJson as { federatedSessionToken: string }).federatedSessionToken
-            : undefined;
-        if (!federatedSessionToken) {
-          throw new Error("Invalid federated token response: missing federatedSessionToken");
-        }
 
-        const mediaRes = await fetch(joinUrl(proxyBaseUrl, mediaPath), {
-          method: "POST",
-          headers: requestHeaders,
-          body: JSON.stringify({ cameraUuid }),
-        });
-        if (!mediaRes.ok) {
-          throw new Error(`Media URIs request failed: ${mediaRes.status} ${mediaRes.statusText}`);
-        }
-        const mediaJson: unknown = await mediaRes.json();
-        const wanLiveMpdUri =
-          typeof mediaJson === "object" &&
-          mediaJson !== null &&
-          "wanLiveMpdUri" in mediaJson &&
-          typeof (mediaJson as { wanLiveMpdUri: unknown }).wanLiveMpdUri === "string"
-            ? (mediaJson as { wanLiveMpdUri: string }).wanLiveMpdUri
-            : undefined;
-        if (!wanLiveMpdUri) {
-          throw new Error("Invalid media URIs response: missing wanLiveMpdUri");
+        let wanLiveMpdUri: string;
+        if (useDirectRhombusApi) {
+          wanLiveMpdUri = await fetchWanLiveMpdUriDirect(
+            resolvedRhombusBase,
+            mediaPath,
+            resolvedToken,
+            cameraUuid
+          );
+        } else {
+          wanLiveMpdUri = await fetchWanLiveMpdUriViaOverride(
+            joinUrl(overrideBase!, mediaPath),
+            requestHeaders,
+            cameraUuid,
+            usedDefaultMediaPath
+          );
         }
 
         if (cancelled) return;
@@ -133,25 +118,9 @@ export function RhombusPlayer({
         const el = videoRef.current;
         if (!el) return;
 
-        player = MediaPlayer().create();
+        player = createRhombusDashPlayer(el, wanLiveMpdUri, resolvedToken, handleDashError);
         playerRef.current = player;
 
-        player.extend(
-          "RequestModifier",
-          function () {
-            return {
-              modifyRequestURL: (url: string) =>
-                appendFederatedAuthQueryParams(url, federatedSessionToken),
-            };
-          },
-          true
-        );
-
-        player.updateSettings(getDefaultRhombusDashSettings());
-
-        player.on(MediaPlayer.events.ERROR, handleDashError, undefined);
-
-        player.initialize(el, wanLiveMpdUri, true);
         onReadyRef.current?.();
       } catch (e: unknown) {
         const err = e instanceof Error ? e : new Error(String(e));
@@ -162,20 +131,19 @@ export function RhombusPlayer({
     return () => {
       cancelled = true;
       if (player) {
-        try {
-          player.off(MediaPlayer.events.ERROR, handleDashError, undefined);
-        } catch {
-          /* ignore */
-        }
-        try {
-          player.reset();
-        } catch {
-          /* ignore */
-        }
+        destroyRhombusDashPlayer(player, handleDashError);
       }
       playerRef.current = null;
     };
-  }, [cameraUuid, proxyBaseUrl, federatedPath, mediaPath, tokenDurationSec]);
+  }, [
+    cameraUuid,
+    overrideBase,
+    federatedPath,
+    mediaPath,
+    resolvedRhombusBase,
+    tokenDurationSec,
+    federatedSessionToken,
+  ]);
 
   return (
     <video
