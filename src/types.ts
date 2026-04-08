@@ -1,4 +1,10 @@
-import type { CSSProperties, VideoHTMLAttributes } from "react";
+import type { CanvasHTMLAttributes, CSSProperties, VideoHTMLAttributes } from "react";
+
+/** Live buffered DASH: server downscale via `_ds` on segment URLs (Rhombus Console `BufferedResolutionQuality`). */
+export type RhombusBufferedStreamQuality = "HIGH" | "MEDIUM" | "LOW";
+
+/** Live realtime WebSocket: SD uses `/wsl` instead of `/ws` (Rhombus Console `RealtimeResolutionQuality`). */
+export type RhombusRealtimeStreamQuality = "HD" | "SD";
 
 export type RhombusPlayerPaths = {
   /**
@@ -9,12 +15,12 @@ export type RhombusPlayerPaths = {
   federatedToken?: string;
   /**
    * POST path for media URIs. When `apiOverrideBaseUrl` is set, resolved against that base (default `/api/media-uris`).
-   * When omitted on `RhombusPlayer`, resolved against `rhombusApiBaseUrl` (default `/camera/getMediaUris`).
+   * When omitted on `RhombusBufferedPlayer`, resolved against `rhombusApiBaseUrl` (default `/camera/getMediaUris`).
    */
   mediaUris?: string;
 };
 
-export type RhombusPlayerProps = {
+export type RhombusBufferedPlayerProps = {
   /** Camera UUID from Rhombus (safe to use in the browser). */
   cameraUuid: string;
   /**
@@ -52,6 +58,16 @@ export type RhombusPlayerProps = {
    * request only when `apiOverrideBaseUrl` is set. Not sent to `api2.rhombussystems.com` in direct Rhombus mode.
    */
   getRequestHeaders?: () => HeadersInit | Promise<HeadersInit>;
+  /**
+   * Live buffered DASH quality: adds `_ds` query params so Rhombus can downscale on the server.
+   * Default `HIGH` (no extra modifiers). Changing this updates segment URLs without re-fetching the manifest.
+   */
+  bufferedStreamQuality?: RhombusBufferedStreamQuality;
+  /**
+   * When `false`, omit `_ds` modifiers (e.g. LAN or when server downscale should not be requested).
+   * Default `true`.
+   */
+  applyBufferedStreamQuality?: boolean;
   /** Extra props passed to the underlying `<video>` element. */
   videoProps?: VideoHTMLAttributes<HTMLVideoElement>;
   className?: string;
@@ -59,5 +75,45 @@ export type RhombusPlayerProps = {
   /** Called when playback is ready (Dash.js initialized and manifest loaded). */
   onReady?: () => void;
   /** Called when token fetch, media URI fetch, or player setup fails. */
+  onError?: (error: Error) => void;
+};
+
+export type RhombusRealtimeConnectionMode = "wan" | "lan";
+
+export type RhombusRealtimePlayerProps = {
+  cameraUuid: string;
+  /**
+   * `wan`: use `wanLiveH264Uris` and append `x-auth-scheme=federated-token` + `x-auth-ft` on the WebSocket URL.
+   * `lan`: use `lanLiveH264Uris` without those query params; set an auth cookie when {@link applyLanAuthCookie} is true.
+   */
+  connectionMode: RhombusRealtimeConnectionMode;
+  apiOverrideBaseUrl?: string;
+  rhombusApiBaseUrl?: string;
+  paths?: RhombusPlayerPaths;
+  federatedSessionToken?: string;
+  tokenDurationSec?: number;
+  headers?: HeadersInit;
+  getRequestHeaders?: () => HeadersInit | Promise<HeadersInit>;
+  /**
+   * Realtime WebSocket resolution: `SD` uses the `/wsl` path; `HD` keeps `/ws`.
+   * Changing this reconnects the WebSocket. Default `HD`.
+   */
+  realtimeStreamQuality?: RhombusRealtimeStreamQuality;
+  /**
+   * When true (default), LAN mode calls `setRhombusLanAuthCookie` before opening the WebSocket.
+   * Disable if your app sets the cookie elsewhere or uses a same-origin proxy.
+   */
+  applyLanAuthCookie?: boolean;
+  /** Cookie name for LAN auth. Default `RFT`. */
+  lanAuthCookieName?: string;
+  lanAuthCookieDomain?: string;
+  lanAuthCookiePath?: string;
+  lanAuthCookieSecure?: boolean;
+  lanAuthCookieMaxAgeSec?: number;
+  lanAuthCookieSameSite?: "strict" | "lax" | "none";
+  canvasProps?: CanvasHTMLAttributes<HTMLCanvasElement>;
+  className?: string;
+  style?: CSSProperties;
+  onReady?: () => void;
   onError?: (error: Error) => void;
 };

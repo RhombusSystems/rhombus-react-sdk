@@ -4,12 +4,21 @@ import {
   type MediaPlayerClass,
 } from "dashjs";
 import { getDefaultRhombusDashSettings } from "./dashSettings.js";
-import type { RhombusPlayerProps } from "./types.js";
+import {
+  appendResolutionModifiers,
+  getResolutionModifiersForBufferedStream,
+} from "./resolutionModifiers.js";
+import type { RhombusBufferedStreamQuality, RhombusBufferedPlayerProps } from "./types.js";
 import { appendFederatedAuthQueryParams, joinUrl } from "./urlAuth.js";
+
+export type RhombusDashQualityCallbacks = {
+  getBufferedStreamQuality: () => RhombusBufferedStreamQuality;
+  getApplyBufferedStreamQuality: () => boolean;
+};
 
 export const DEFAULT_RHOMBUS_API_BASE_URL = "https://api2.rhombussystems.com/api";
 
-const LOG_PREFIX = "[RhombusPlayer]";
+const LOG_PREFIX = "[RhombusBufferedPlayer]";
 
 export function getBrowserOrigin(): string {
   if (
@@ -28,7 +37,7 @@ export function getBrowserOrigin(): string {
 
 export async function mergeRequestHeaders(
   headers: HeadersInit | undefined,
-  getRequestHeaders: RhombusPlayerProps["getRequestHeaders"]
+  getRequestHeaders: RhombusBufferedPlayerProps["getRequestHeaders"]
 ): Promise<HeadersInit> {
   const out = new Headers({
     "Content-Type": "application/json",
@@ -170,7 +179,8 @@ export function createRhombusDashPlayer(
   videoEl: HTMLVideoElement,
   wanLiveMpdUri: string,
   federatedSessionToken: string,
-  onDashError: (e: DashJSErrorEvent) => void
+  onDashError: (e: DashJSErrorEvent) => void,
+  qualityCallbacks: RhombusDashQualityCallbacks
 ): MediaPlayerClass {
   const player = MediaPlayer().create();
 
@@ -178,8 +188,16 @@ export function createRhombusDashPlayer(
     "RequestModifier",
     function () {
       return {
-        modifyRequestURL: (url: string) =>
-          appendFederatedAuthQueryParams(url, federatedSessionToken),
+        modifyRequestURL: (url: string) => {
+          let next = url;
+          if (qualityCallbacks.getApplyBufferedStreamQuality()) {
+            next = appendResolutionModifiers(
+              next,
+              getResolutionModifiersForBufferedStream(qualityCallbacks.getBufferedStreamQuality())
+            );
+          }
+          return appendFederatedAuthQueryParams(next, federatedSessionToken);
+        },
       };
     },
     true
