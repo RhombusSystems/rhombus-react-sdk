@@ -83,8 +83,9 @@ export type RhombusRealtimeConnectionMode = "wan" | "lan";
 export type RhombusRealtimePlayerProps = {
   cameraUuid: string;
   /**
-   * `wan`: use `wanLiveH264Uris` and append `x-auth-scheme=federated-token` + `x-auth-ft` on the WebSocket URL.
-   * `lan`: use `lanLiveH264Uris` without those query params; set an auth cookie when {@link applyLanAuthCookie} is true.
+   * `wan`: use `wanLiveH264Uri` / `wanLiveH264Uris` from `getMediaUris`.
+   * `lan`: use `lanLiveH264Uri` / `lanLiveH264Uris`.
+   * Both modes append `x-auth-scheme=federated-token` and `x-auth-ft` on the WebSocket URL (same as DASH segment auth).
    */
   connectionMode: RhombusRealtimeConnectionMode;
   apiOverrideBaseUrl?: string;
@@ -99,18 +100,6 @@ export type RhombusRealtimePlayerProps = {
    * Changing this reconnects the WebSocket. Default `HD`.
    */
   realtimeStreamQuality?: RhombusRealtimeStreamQuality;
-  /**
-   * When true (default), LAN mode calls `setRhombusLanAuthCookie` before opening the WebSocket.
-   * Disable if your app sets the cookie elsewhere or uses a same-origin proxy.
-   */
-  applyLanAuthCookie?: boolean;
-  /** Cookie name for LAN auth. Default `RFT`. */
-  lanAuthCookieName?: string;
-  lanAuthCookieDomain?: string;
-  lanAuthCookiePath?: string;
-  lanAuthCookieSecure?: boolean;
-  lanAuthCookieMaxAgeSec?: number;
-  lanAuthCookieSameSite?: "strict" | "lax" | "none";
   canvasProps?: CanvasHTMLAttributes<HTMLCanvasElement>;
   className?: string;
   style?: CSSProperties;

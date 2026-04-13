@@ -22,22 +22,3 @@ export function joinUrl(base: string, path: string): string {
   const trimmedPath = path.startsWith("/") ? path : `/${path}`;
   return `${trimmedBase}${trimmedPath}`;
 }
-
-/**
- * Removes federated-token query params from a URL (e.g. LAN WebSocket URIs must not use them).
- */
-export function stripFederatedAuthQueryParams(url: string): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    const base =
-      typeof globalThis !== "undefined" && "location" in globalThis && globalThis.location?.origin
-        ? globalThis.location.origin
-        : "https://local.invalid";
-    parsed = new URL(url, base);
-  }
-  parsed.searchParams.delete("x-auth-scheme");
-  parsed.searchParams.delete("x-auth-ft");
-  return parsed.toString();
-}

@@ -37,11 +37,11 @@ Under the hood: the SDK **`POST`**s to **`window.location.origin` + `paths.feder
 
 Use **`getMediaUris`** (same POST as DASH). The component reads **`wanLiveH264Uri`** or **`wanLiveH264Uris`**, and **`lanLiveH264Uri`** or **`lanLiveH264Uris`** (Rhombus may return either a single string or an array). It decodes Rhombus’s TLV-framed H.264 stream and draws to a **`<canvas>`**.
 
-- **`connectionMode="wan"`** — Picks the WAN H.264 WebSocket URI and appends **`x-auth-scheme=federated-token`** and **`x-auth-ft=<token>`** to the WebSocket URL (same idea as DASH segment URLs).
-- **`connectionMode="lan"`** — Picks the LAN H.264 WebSocket URI, does **not** put federated auth on the URL (Rhombus LAN endpoints reject **`x-auth-scheme`** on the socket). Before connecting, the SDK can set a cookie **`RFT=<federated token>`** via **`setRhombusLanAuthCookie`** / **`applyLanAuthCookie`** (default **`true`**). Configure **`lanAuthCookieDomain`**, **`lanAuthCookiePath`**, **`lanAuthCookieSecure`**, etc. when your deployment allows the browser to set a cookie visible to the WebSocket origin.
+- **`connectionMode="wan"`** — Uses **`wanLiveH264Uri`** / **`wanLiveH264Uris`** and appends **`x-auth-scheme=federated-token`** and **`x-auth-ft=<token>`** to the WebSocket URL (same idea as DASH segment URLs).
+- **`connectionMode="lan"`** — Uses **`lanLiveH264Uri`** / **`lanLiveH264Uris`** and appends the **same** federated query parameters on the socket URL so LAN realtime works without cookies (including from **`localhost`**).
 
-> [!WARNING]
-> **LAN cookies and browser security:** `document.cookie` cannot set a cookie for arbitrary hosts. Serving the app from **`localhost`** while the WebSocket is **`wss://…lan…`** typically means the **`RFT`** cookie **cannot** be applied by the page; LAN realtime works when your app and cookie domain align with Rhombus’s LAN DNS layout (or you set the cookie through another same-origin/auth flow). Use **`applyLanAuthCookie={false}`** if your integration sets **`RFT`** elsewhere.
+> [!NOTE]
+> **v1.0 (breaking):** LAN no longer uses **`document.cookie`** or props like **`applyLanAuthCookie`**. **`setRhombusLanAuthCookie`** was removed. Upgrade only when your Rhombus deployment accepts federated-token query params on LAN WebSocket URLs.
 
 ```tsx
 import { RhombusRealtimePlayer } from "@rhombussystems/react";
@@ -57,7 +57,7 @@ export function RealtimeCameraWan() {
 }
 ```
 
-Optional exports for custom wiring: **`resolveLiveH264WebSocketUrl`**, **`startRhombusRealtimeSession`**, **`setRhombusLanAuthCookie`**.
+Optional exports for custom wiring: **`resolveLiveH264WebSocketUrl`**, **`startRhombusRealtimeSession`**.
 
 ## Stream quality (optional)
 
@@ -155,9 +155,8 @@ Shared and **RhombusBufferedPlayer**-specific:
 
 | Prop | Role |
 |------|------|
-| `connectionMode` | `"wan"` or `"lan"` — see **Realtime WebSocket** above. |
+| `connectionMode` | `"wan"` or `"lan"` — which `getMediaUris` H.264 URI field to use; both append federated auth query params on the WebSocket. |
 | `realtimeStreamQuality` | `HD` \| `SD`. Default `HD`. `SD` uses `/wsl` instead of `/ws`; changing this prop reconnects the WebSocket. |
-| `applyLanAuthCookie`, `lanAuthCookieName`, … | LAN cookie options (see realtime section above). |
 
 Non-OK responses (e.g. **404** on the default token path) log **`[RhombusBufferedPlayer]`** hints in the console with the request URL and how to adjust `paths` / `apiOverrideBaseUrl`, while **`onError`** still receives a concise `Error`.
 

@@ -1,55 +1,8 @@
 import { formatWebsocketResolutionUri } from "./resolutionModifiers.js";
 import type { RhombusRealtimeConnectionMode, RhombusRealtimeStreamQuality } from "./types.js";
-import {
-  appendFederatedAuthQueryParams,
-  joinUrl,
-  stripFederatedAuthQueryParams,
-} from "./urlAuth.js";
+import { appendFederatedAuthQueryParams, joinUrl } from "./urlAuth.js";
 
 const LOG_PREFIX = "[RhombusRealtimePlayer]";
-
-export type SetLanAuthCookieOptions = {
-  name: string;
-  token: string;
-  path?: string;
-  domain?: string;
-  secure?: boolean;
-  maxAgeSec?: number;
-  sameSite?: "strict" | "lax" | "none";
-};
-
-/**
- * Sets a document cookie for LAN WebSocket auth (e.g. `RFT=<federated token>`).
- * Only works when the browser allows setting a cookie visible to the WebSocket origin
- * (same-site / valid Domain). You cannot set a cookie for a camera host from an unrelated origin such as localhost.
- */
-export function setRhombusLanAuthCookie(options: SetLanAuthCookieOptions): void {
-  if (typeof document === "undefined") return;
-  const {
-    name,
-    token,
-    path = "/",
-    domain,
-    secure,
-    maxAgeSec,
-    sameSite,
-  } = options;
-  let cookie = `${encodeURIComponent(name)}=${encodeURIComponent(token)}`;
-  cookie += `; Path=${path}`;
-  if (domain) {
-    cookie += `; Domain=${domain}`;
-  }
-  if (secure) {
-    cookie += "; Secure";
-  }
-  if (maxAgeSec != null) {
-    cookie += `; Max-Age=${maxAgeSec}`;
-  }
-  if (sameSite) {
-    cookie += `; SameSite=${sameSite === "none" ? "None" : sameSite === "lax" ? "Lax" : "Strict"}`;
-  }
-  document.cookie = cookie;
-}
 
 function firstMediaUri(value: unknown): string | undefined {
   if (typeof value === "string" && value.trim()) {
@@ -106,10 +59,7 @@ function parseLiveH264UriFromMediaJson(
   }
   const sdEnabled = realtimeStreamQuality === "SD";
   const pathUri = formatWebsocketResolutionUri(sdEnabled, raw);
-  if (connectionMode === "wan") {
-    return appendFederatedAuthQueryParams(pathUri, federatedSessionToken);
-  }
-  return stripFederatedAuthQueryParams(pathUri);
+  return appendFederatedAuthQueryParams(pathUri, federatedSessionToken);
 }
 
 export async function fetchCameraMediaUrisJsonDirect(

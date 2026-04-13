@@ -6,10 +6,7 @@ import {
   getBrowserOrigin,
   mergeRequestHeaders,
 } from "./rhombusPlayback.js";
-import {
-  resolveLiveH264WebSocketUrl,
-  setRhombusLanAuthCookie,
-} from "./rhombusRealtimePlayback.js";
+import { resolveLiveH264WebSocketUrl } from "./rhombusRealtimePlayback.js";
 import { joinUrl } from "./urlAuth.js";
 import { startRhombusRealtimeSession } from "./rhombusRealtimeSession.js";
 
@@ -28,13 +25,6 @@ export function RhombusRealtimePlayer({
   realtimeStreamQuality = "HD",
   headers,
   getRequestHeaders,
-  applyLanAuthCookie = true,
-  lanAuthCookieName = "RFT",
-  lanAuthCookieDomain,
-  lanAuthCookiePath = "/",
-  lanAuthCookieSecure,
-  lanAuthCookieMaxAgeSec,
-  lanAuthCookieSameSite,
   canvasProps,
   className,
   style,
@@ -112,18 +102,6 @@ export function RhombusRealtimePlayer({
 
         if (cancelled) return;
 
-        if (connectionMode === "lan" && applyLanAuthCookie) {
-          setRhombusLanAuthCookie({
-            name: lanAuthCookieName,
-            token: resolvedToken,
-            path: lanAuthCookiePath,
-            domain: lanAuthCookieDomain,
-            secure: lanAuthCookieSecure,
-            maxAgeSec: lanAuthCookieMaxAgeSec,
-            sameSite: lanAuthCookieSameSite,
-          });
-        }
-
         const el = canvasRef.current;
         if (!el || cancelled) return;
 
@@ -161,13 +139,6 @@ export function RhombusRealtimePlayer({
     resolvedRhombusBase,
     tokenDurationSec,
     federatedSessionToken,
-    applyLanAuthCookie,
-    lanAuthCookieName,
-    lanAuthCookieDomain,
-    lanAuthCookiePath,
-    lanAuthCookieSecure,
-    lanAuthCookieMaxAgeSec,
-    lanAuthCookieSameSite,
     useDirectRhombusApi,
     usedDefaultFederatedPath,
     usedDefaultMediaPath,
