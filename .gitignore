@@ -23,7 +23,7 @@ pnpm-debug.log*
 # OS
 .DS_Store
 Thumbs.db
-
+AGENTS.md
 # Editors / IDEs
 .idea/
 *.iml
