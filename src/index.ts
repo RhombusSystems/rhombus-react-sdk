@@ -9,5 +9,14 @@ export type {
   RhombusRealtimeStreamQuality,
 } from "./types.js";
 export { getDefaultRhombusDashSettings } from "./dashSettings.js";
+export {
+  fetchFederatedSessionToken,
+  getFederatedTokenRefreshDelayMs,
+} from "./rhombusPlayback.js";
+export type {
+  FederatedTokenFetchResult,
+  RhombusDashPlayerCallbacks,
+  RhombusDashQualityCallbacks,
+} from "./rhombusPlayback.js";
 export { resolveLiveH264WebSocketUrl } from "./rhombusRealtimePlayback.js";
 export { startRhombusRealtimeSession } from "./rhombusRealtimeSession.js";

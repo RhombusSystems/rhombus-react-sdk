@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { ErrorEvent as DashJSErrorEvent, MediaPlayerClass } from "dashjs";
-import type { RhombusDashQualityCallbacks } from "./rhombusPlayback.js";
+import type { FederatedTokenFetchResult, RhombusDashPlayerCallbacks } from "./rhombusPlayback.js";
 import {
   createRhombusDashPlayer,
   DEFAULT_RHOMBUS_API_BASE_URL,
@@ -9,6 +9,7 @@ import {
   fetchWanLiveMpdUriDirect,
   fetchWanLiveMpdUriViaOverride,
   getBrowserOrigin,
+  getFederatedTokenRefreshDelayMs,
   mergeRequestHeaders,
 } from "./rhombusPlayback.js";
 import type { RhombusBufferedStreamQuality, RhombusBufferedPlayerProps } from "./types.js";
@@ -44,10 +45,23 @@ export function RhombusBufferedPlayer({
 
   const bufferedQRef = useRef<RhombusBufferedStreamQuality>("HIGH");
   const applyBQRef = useRef(true);
-  const dashQualityCallbacksRef = useRef<RhombusDashQualityCallbacks>({
-    getBufferedStreamQuality: () => bufferedQRef.current,
-    getApplyBufferedStreamQuality: () => applyBQRef.current,
-  });
+  const tokenRef = useRef("");
+  const durationSecRef = useRef(tokenDurationSec);
+  durationSecRef.current = tokenDurationSec;
+
+  const sdkRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleSdkTokenRefreshRef = useRef<
+    (last: FederatedTokenFetchResult, fetchedAtMs: number, durationUsedSec: number) => void
+  >(() => {});
+
+  const dashPlayerCallbacksRef = useRef<RhombusDashPlayerCallbacks | null>(null);
+  if (dashPlayerCallbacksRef.current === null) {
+    dashPlayerCallbacksRef.current = {
+      getBufferedStreamQuality: () => bufferedQRef.current,
+      getApplyBufferedStreamQuality: () => applyBQRef.current,
+      getFederatedSessionToken: () => tokenRef.current,
+    };
+  }
 
   onReadyRef.current = onReady;
   onErrorRef.current = onError;
@@ -71,11 +85,29 @@ export function RhombusBufferedPlayer({
   const resolvedRhombusBase =
     rhombusApiBaseUrl?.trim() || DEFAULT_RHOMBUS_API_BASE_URL;
 
+  const sdkManagedFederatedToken = federatedSessionToken === undefined;
+  const federatedTokenModeKey =
+    federatedSessionToken === undefined ? "__sdk_managed__" : "__external__";
+
+  function clearSdkRefreshTimer() {
+    if (sdkRefreshTimerRef.current != null) {
+      clearTimeout(sdkRefreshTimerRef.current);
+      sdkRefreshTimerRef.current = null;
+    }
+  }
+
+  useEffect(() => {
+    if (federatedSessionToken === undefined) return;
+    if (typeof federatedSessionToken === "string" && federatedSessionToken) {
+      tokenRef.current = federatedSessionToken;
+    }
+  }, [federatedSessionToken]);
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
-    let cancelled = false;
+    let effectCancelled = false;
     let player: MediaPlayerClass | null = null;
 
     const handleDashError = (e: DashJSErrorEvent) => {
@@ -87,6 +119,49 @@ export function RhombusBufferedPlayer({
       onErrorRef.current?.(new Error(message));
     };
 
+    const scheduleSdkTokenRefresh = (
+      lastResult: FederatedTokenFetchResult,
+      fetchedAtMs: number,
+      durationUsedSec: number
+    ) => {
+      clearSdkRefreshTimer();
+      const delayMs = getFederatedTokenRefreshDelayMs({
+        requestedDurationSec: durationUsedSec,
+        fetchedAtMs,
+        expiryHint: lastResult,
+      });
+      sdkRefreshTimerRef.current = setTimeout(() => {
+        void (async () => {
+          if (effectCancelled) return;
+          try {
+            const requestHeaders = await mergeRequestHeaders(
+              headersRef.current,
+              getRequestHeadersRef.current
+            );
+            const tokenUrl = useDirectRhombusApi
+              ? joinUrl(getBrowserOrigin(), federatedPath)
+              : joinUrl(overrideBase!, federatedPath);
+            const next = await fetchFederatedSessionToken(
+              tokenUrl,
+              requestHeaders,
+              durationSecRef.current,
+              usedDefaultFederatedPath
+            );
+            if (effectCancelled) return;
+            tokenRef.current = next.federatedSessionToken;
+            const at = Date.now();
+            const durUsed = durationSecRef.current;
+            scheduleSdkTokenRefresh(next, at, durUsed);
+          } catch (e: unknown) {
+            const err = e instanceof Error ? e : new Error(String(e));
+            onErrorRef.current?.(err);
+          }
+        })();
+      }, delayMs);
+    };
+
+    scheduleSdkTokenRefreshRef.current = scheduleSdkTokenRefresh;
+
     (async () => {
       try {
         const requestHeaders = await mergeRequestHeaders(
@@ -94,22 +169,24 @@ export function RhombusBufferedPlayer({
           getRequestHeadersRef.current
         );
 
-        let resolvedToken: string;
-        if (federatedSessionToken !== undefined) {
-          if (!federatedSessionToken) {
-            throw new Error("federatedSessionToken must be a non-empty string");
-          }
-          resolvedToken = federatedSessionToken;
-        } else {
+        let initialTokenResult: FederatedTokenFetchResult | null = null;
+        if (sdkManagedFederatedToken) {
           const tokenUrl = useDirectRhombusApi
             ? joinUrl(getBrowserOrigin(), federatedPath)
             : joinUrl(overrideBase!, federatedPath);
-          resolvedToken = await fetchFederatedSessionToken(
+          initialTokenResult = await fetchFederatedSessionToken(
             tokenUrl,
             requestHeaders,
-            tokenDurationSec,
+            durationSecRef.current,
             usedDefaultFederatedPath
           );
+          if (effectCancelled) return;
+          tokenRef.current = initialTokenResult.federatedSessionToken;
+        } else {
+          if (!federatedSessionToken) {
+            throw new Error("federatedSessionToken must be a non-empty string");
+          }
+          tokenRef.current = federatedSessionToken;
         }
 
         let wanLiveMpdUri: string;
@@ -117,7 +194,7 @@ export function RhombusBufferedPlayer({
           wanLiveMpdUri = await fetchWanLiveMpdUriDirect(
             resolvedRhombusBase,
             mediaPath,
-            resolvedToken,
+            tokenRef.current,
             cameraUuid
           );
         } else {
@@ -129,7 +206,7 @@ export function RhombusBufferedPlayer({
           );
         }
 
-        if (cancelled) return;
+        if (effectCancelled) return;
 
         const el = videoRef.current;
         if (!el) return;
@@ -137,11 +214,14 @@ export function RhombusBufferedPlayer({
         player = createRhombusDashPlayer(
           el,
           wanLiveMpdUri,
-          resolvedToken,
           handleDashError,
-          dashQualityCallbacksRef.current
+          dashPlayerCallbacksRef.current!
         );
         playerRef.current = player;
+
+        if (sdkManagedFederatedToken && initialTokenResult !== null) {
+          scheduleSdkTokenRefresh(initialTokenResult, Date.now(), durationSecRef.current);
+        }
 
         onReadyRef.current?.();
       } catch (e: unknown) {
@@ -151,32 +231,78 @@ export function RhombusBufferedPlayer({
     })();
 
     return () => {
-      cancelled = true;
+      effectCancelled = true;
+      clearSdkRefreshTimer();
+      scheduleSdkTokenRefreshRef.current = () => {};
       if (player) {
         destroyRhombusDashPlayer(player, handleDashError);
       }
       playerRef.current = null;
     };
   }, [
+    federatedTokenModeKey,
     cameraUuid,
     overrideBase,
     federatedPath,
     mediaPath,
     resolvedRhombusBase,
+    useDirectRhombusApi,
+    usedDefaultFederatedPath,
+    usedDefaultMediaPath,
+  ]);
+
+  useEffect(() => {
+    if (!sdkManagedFederatedToken) return;
+    if (!playerRef.current) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        clearSdkRefreshTimer();
+        const requestHeaders = await mergeRequestHeaders(
+          headersRef.current,
+          getRequestHeadersRef.current
+        );
+        const tokenUrl = useDirectRhombusApi
+          ? joinUrl(getBrowserOrigin(), federatedPath)
+          : joinUrl(overrideBase!, federatedPath);
+        const next = await fetchFederatedSessionToken(
+          tokenUrl,
+          requestHeaders,
+          tokenDurationSec,
+          usedDefaultFederatedPath
+        );
+        if (cancelled || !playerRef.current) return;
+        tokenRef.current = next.federatedSessionToken;
+        scheduleSdkTokenRefreshRef.current(next, Date.now(), tokenDurationSec);
+      } catch (e: unknown) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        onErrorRef.current?.(err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
     tokenDurationSec,
-    federatedSessionToken,
+    sdkManagedFederatedToken,
+    useDirectRhombusApi,
+    overrideBase,
+    federatedPath,
+    usedDefaultFederatedPath,
   ]);
 
   useEffect(() => {
     const player = playerRef.current;
-    const video = videoRef.current;
-    if (!isRhombusSafariDash() || !player || !video) {
+    const vid = videoRef.current;
+    if (!isRhombusSafariDash() || !player || !vid) {
       return;
     }
     try {
       if (player.isReady()) {
         player.pause();
-        player.attachView(video);
+        player.attachView(vid);
         player.play();
       }
     } catch {

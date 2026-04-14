@@ -33,6 +33,21 @@ See the Rhombus [**Generate federated session token**](https://docs.rhombus.com/
 
 Under the hood: the SDK **`POST`**s to **`window.location.origin` + `paths.federatedToken`** (default **`/api/federated-token`**), then **`POST`**s **media URIs** to Rhombus (`rhombusApiBaseUrl`, default **`https://api2.rhombussystems.com/api`**, path default **`/camera/getMediaUris`**) with federated auth headers.
 
+### Federated token refresh (SDK-managed)
+
+When **`federatedSessionToken` is omitted**, the SDK periodically re-fetches the token from your **`POST`** federated-token route so streams outlive a single token TTL. The next refresh is scheduled at approximately **97%** of the effective lifetime, where effective lifetime is the minimum of:
+
+- the requested **`tokenDurationSec`** (sent as **`durationSec`** in the JSON body), and
+- optional server hints in the token JSON response: **`expiresInSec`** (seconds), **`expiresAtMs`** (Unix ms), or **`expiresAt`** (ISO date string or Unix seconds/ms).
+
+**DASH (`RhombusBufferedPlayer`):** Dash.js keeps running; segment and manifest requests read the **current** token from an internal ref, so rotation does not reset the player.
+
+**Realtime (`RhombusRealtimePlayer`):** Auth is on the WebSocket URL, so each refresh **closes and reopens** the socket (expect a short blip). **`onReady`** fires only after the **first** successful connection for that mount.
+
+When **`federatedSessionToken` is set**, the SDK does **not** call your token endpoint. You must mint and refresh tokens yourself; pass an updated string to rotate. DASH picks up the new value without remounting; realtime reconnects when the prop changes.
+
+Optional helpers (advanced / testing): **`fetchFederatedSessionToken`**, **`getFederatedTokenRefreshDelayMs`**, type **`FederatedTokenFetchResult`**.
+
 ## Realtime WebSocket: `RhombusRealtimePlayer`
 
 Use **`getMediaUris`** (same POST as DASH). The component reads **`wanLiveH264Uri`** or **`wanLiveH264Uris`**, and **`lanLiveH264Uri`** or **`lanLiveH264Uris`** (Rhombus may return either a single string or an array). It decodes Rhombus’s TLV-framed H.264 stream and draws to a **`<canvas>`**.
@@ -146,7 +161,8 @@ Shared and **RhombusBufferedPlayer**-specific:
 | `rhombusApiBaseUrl` | Optional. Rhombus REST base when `apiOverrideBaseUrl` is omitted. Default `https://api2.rhombussystems.com/api`. |
 | `paths.federatedToken` | Default `/api/federated-token`. Override if your route differs. |
 | `paths.mediaUris` | With override: default `/api/media-uris`. Without override: default `/camera/getMediaUris` on Rhombus. |
-| `federatedSessionToken` | If set, skips the token `fetch`; media step still runs (Rhombus or override, depending on `apiOverrideBaseUrl`). |
+| `federatedSessionToken` | If set, skips the token `fetch`; you supply rotation. DASH uses the latest value without teardown; realtime reconnects when the prop changes. |
+| `tokenDurationSec` | Requested token TTL (seconds) for SDK-managed fetch/refresh. Default `86400`. Changing it re-mints without resetting DASH. |
 | `headers` / `getRequestHeaders` | Merged into the **federated-token** request always; into the **media-URIs** request only when `apiOverrideBaseUrl` is set. Not sent to Rhombus in direct mode. |
 | `bufferedStreamQuality` | **RhombusBufferedPlayer** only. `HIGH` \| `MEDIUM` \| `LOW`. Server downscale via `_ds` on DASH requests. Default `HIGH`. Updating does not re-fetch the manifest. |
 | `applyBufferedStreamQuality` | **RhombusBufferedPlayer** only. Default `true`. If `false`, `_ds` is not appended. |
@@ -168,6 +184,7 @@ Your server should expose **`POST`** (default **`/api/federated-token`**):
 
 - Body: `{ "durationSec": number }` (forward to Rhombus `POST /org/generateFederatedSessionToken` with your API key server-side).
 - Response JSON must include `federatedSessionToken` (string).
+- Optionally include **`expiresInSec`**, **`expiresAtMs`**, or **`expiresAt`** (see [Federated token refresh](#federated-token-refresh-sdk-managed)) so refresh timing matches server-enforced caps.
 - When minting the token, pass Rhombus **`domain`** so the browser may call `api2.rhombussystems.com` for `getMediaUris` ([**Generate federated session token**](https://docs.rhombus.com/#927fe3b3-7e39-4709-9d4e-8d3da95940cd)).
 
 ### Override mode (both hops through your server)

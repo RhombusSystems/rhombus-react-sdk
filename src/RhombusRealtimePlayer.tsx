@@ -1,9 +1,11 @@
 import { useEffect, useRef } from "react";
+import type { FederatedTokenFetchResult } from "./rhombusPlayback.js";
 import type { RhombusRealtimePlayerProps } from "./types.js";
 import {
   DEFAULT_RHOMBUS_API_BASE_URL,
   fetchFederatedSessionToken,
   getBrowserOrigin,
+  getFederatedTokenRefreshDelayMs,
   mergeRequestHeaders,
 } from "./rhombusPlayback.js";
 import { resolveLiveH264WebSocketUrl } from "./rhombusRealtimePlayback.js";
@@ -37,6 +39,18 @@ export function RhombusRealtimePlayer({
   const headersRef = useRef(headers);
   const getRequestHeadersRef = useRef(getRequestHeaders);
 
+  const tokenRef = useRef("");
+  const durationSecRef = useRef(tokenDurationSec);
+  durationSecRef.current = tokenDurationSec;
+
+  const sdkRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const destroySessionRef = useRef<(() => void) | null>(null);
+  const realtimeReadyFiredRef = useRef(false);
+  const scheduleSdkTokenRefreshRef = useRef<
+    (last: FederatedTokenFetchResult, fetchedAtMs: number, durationUsedSec: number) => void
+  >(() => {});
+  const prevExternalFederatedTokenRef = useRef<string | undefined>(undefined);
+
   onReadyRef.current = onReady;
   onErrorRef.current = onError;
   headersRef.current = headers;
@@ -52,69 +66,68 @@ export function RhombusRealtimePlayer({
   const usedDefaultMediaPath = paths?.mediaUris === undefined;
   const resolvedRhombusBase = rhombusApiBaseUrl?.trim() || DEFAULT_RHOMBUS_API_BASE_URL;
 
+  const sdkManagedFederatedToken = federatedSessionToken === undefined;
+  const federatedTokenModeKey =
+    federatedSessionToken === undefined ? "__sdk_managed__" : "__external__";
+
+  function clearSdkRefreshTimer() {
+    if (sdkRefreshTimerRef.current != null) {
+      clearTimeout(sdkRefreshTimerRef.current);
+      sdkRefreshTimerRef.current = null;
+    }
+  }
+
+  function destroyRealtimeSession() {
+    destroySessionRef.current?.();
+    destroySessionRef.current = null;
+  }
+
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (federatedSessionToken === undefined) return;
+    if (typeof federatedSessionToken !== "string" || !federatedSessionToken) return;
 
-    let cancelled = false;
-    let destroySession: (() => void) | null = null;
-    let readyFired = false;
+    const prev = prevExternalFederatedTokenRef.current;
+    prevExternalFederatedTokenRef.current = federatedSessionToken;
+    tokenRef.current = federatedSessionToken;
 
-    (async () => {
+    if (prev === undefined) return;
+    if (prev === federatedSessionToken) return;
+    if (!destroySessionRef.current) return;
+
+    let externalRotateCancelled = false;
+    void (async () => {
       try {
         const requestHeaders = await mergeRequestHeaders(
           headersRef.current,
           getRequestHeadersRef.current
         );
-
-        let resolvedToken: string;
-        if (federatedSessionToken !== undefined) {
-          if (!federatedSessionToken) {
-            throw new Error("federatedSessionToken must be a non-empty string");
-          }
-          resolvedToken = federatedSessionToken;
-        } else {
-          const tokenUrl = useDirectRhombusApi
-            ? joinUrl(getBrowserOrigin(), federatedPath)
-            : joinUrl(overrideBase!, federatedPath);
-          resolvedToken = await fetchFederatedSessionToken(
-            tokenUrl,
-            requestHeaders,
-            tokenDurationSec,
-            usedDefaultFederatedPath
-          );
-        }
-
-        if (cancelled) return;
-
         const wsUrl = await resolveLiveH264WebSocketUrl({
           useDirectRhombusApi,
           overrideBase,
           rhombusApiBaseUrl: resolvedRhombusBase,
           mediaPath,
-          federatedSessionToken: resolvedToken,
+          federatedSessionToken: tokenRef.current,
           cameraUuid,
           requestHeaders,
           usedDefaultMediaPath,
           connectionMode,
           realtimeStreamQuality,
         });
-
-        if (cancelled) return;
-
+        if (externalRotateCancelled || !destroySessionRef.current) return;
         const el = canvasRef.current;
-        if (!el || cancelled) return;
-
-        destroySession = startRhombusRealtimeSession({
+        if (!el) return;
+        destroyRealtimeSession();
+        destroySessionRef.current = startRhombusRealtimeSession({
           wsUrl,
           canvas: el,
           onError: err => {
             onErrorRef.current?.(err);
           },
           onReady: () => {
-            if (readyFired) return;
-            readyFired = true;
-            onReadyRef.current?.();
+            if (!realtimeReadyFiredRef.current) {
+              realtimeReadyFiredRef.current = true;
+              onReadyRef.current?.();
+            }
           },
         });
       } catch (e: unknown) {
@@ -124,23 +137,262 @@ export function RhombusRealtimePlayer({
     })();
 
     return () => {
-      cancelled = true;
-      if (destroySession) {
-        destroySession();
-        destroySession = null;
-      }
+      externalRotateCancelled = true;
     };
   }, [
+    federatedSessionToken,
+    useDirectRhombusApi,
+    overrideBase,
+    resolvedRhombusBase,
+    mediaPath,
+    cameraUuid,
+    usedDefaultMediaPath,
+    connectionMode,
+    realtimeStreamQuality,
+  ]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    let effectCancelled = false;
+    realtimeReadyFiredRef.current = false;
+
+    const scheduleSdkTokenRefresh = (
+      lastResult: FederatedTokenFetchResult,
+      fetchedAtMs: number,
+      durationUsedSec: number
+    ) => {
+      clearSdkRefreshTimer();
+      const delayMs = getFederatedTokenRefreshDelayMs({
+        requestedDurationSec: durationUsedSec,
+        fetchedAtMs,
+        expiryHint: lastResult,
+      });
+      sdkRefreshTimerRef.current = setTimeout(() => {
+        void (async () => {
+          if (effectCancelled) return;
+          try {
+            const requestHeaders = await mergeRequestHeaders(
+              headersRef.current,
+              getRequestHeadersRef.current
+            );
+            const tokenUrl = useDirectRhombusApi
+              ? joinUrl(getBrowserOrigin(), federatedPath)
+              : joinUrl(overrideBase!, federatedPath);
+            const next = await fetchFederatedSessionToken(
+              tokenUrl,
+              requestHeaders,
+              durationSecRef.current,
+              usedDefaultFederatedPath
+            );
+            if (effectCancelled) return;
+            tokenRef.current = next.federatedSessionToken;
+            const wsUrl = await resolveLiveH264WebSocketUrl({
+              useDirectRhombusApi,
+              overrideBase,
+              rhombusApiBaseUrl: resolvedRhombusBase,
+              mediaPath,
+              federatedSessionToken: tokenRef.current,
+              cameraUuid,
+              requestHeaders,
+              usedDefaultMediaPath,
+              connectionMode,
+              realtimeStreamQuality,
+            });
+            if (effectCancelled) return;
+            const el = canvasRef.current;
+            if (!el) return;
+            destroyRealtimeSession();
+            destroySessionRef.current = startRhombusRealtimeSession({
+              wsUrl,
+              canvas: el,
+              onError: err => {
+                onErrorRef.current?.(err);
+              },
+              onReady: () => {
+                if (!realtimeReadyFiredRef.current) {
+                  realtimeReadyFiredRef.current = true;
+                  onReadyRef.current?.();
+                }
+              },
+            });
+            const at = Date.now();
+            const durUsed = durationSecRef.current;
+            scheduleSdkTokenRefresh(next, at, durUsed);
+          } catch (e: unknown) {
+            const err = e instanceof Error ? e : new Error(String(e));
+            onErrorRef.current?.(err);
+          }
+        })();
+      }, delayMs);
+    };
+
+    scheduleSdkTokenRefreshRef.current = scheduleSdkTokenRefresh;
+
+    (async () => {
+      try {
+        const requestHeaders = await mergeRequestHeaders(
+          headersRef.current,
+          getRequestHeadersRef.current
+        );
+
+        let initialTokenResult: FederatedTokenFetchResult | null = null;
+        if (sdkManagedFederatedToken) {
+          const tokenUrl = useDirectRhombusApi
+            ? joinUrl(getBrowserOrigin(), federatedPath)
+            : joinUrl(overrideBase!, federatedPath);
+          initialTokenResult = await fetchFederatedSessionToken(
+            tokenUrl,
+            requestHeaders,
+            durationSecRef.current,
+            usedDefaultFederatedPath
+          );
+          if (effectCancelled) return;
+          tokenRef.current = initialTokenResult.federatedSessionToken;
+        } else {
+          if (!federatedSessionToken) {
+            throw new Error("federatedSessionToken must be a non-empty string");
+          }
+          tokenRef.current = federatedSessionToken;
+        }
+
+        if (effectCancelled) return;
+
+        const wsUrl = await resolveLiveH264WebSocketUrl({
+          useDirectRhombusApi,
+          overrideBase,
+          rhombusApiBaseUrl: resolvedRhombusBase,
+          mediaPath,
+          federatedSessionToken: tokenRef.current,
+          cameraUuid,
+          requestHeaders,
+          usedDefaultMediaPath,
+          connectionMode,
+          realtimeStreamQuality,
+        });
+
+        if (effectCancelled) return;
+
+        const el = canvasRef.current;
+        if (!el || effectCancelled) return;
+
+        destroySessionRef.current = startRhombusRealtimeSession({
+          wsUrl,
+          canvas: el,
+          onError: err => {
+            onErrorRef.current?.(err);
+          },
+          onReady: () => {
+            if (realtimeReadyFiredRef.current) return;
+            realtimeReadyFiredRef.current = true;
+            onReadyRef.current?.();
+          },
+        });
+
+        if (sdkManagedFederatedToken && initialTokenResult !== null) {
+          scheduleSdkTokenRefresh(initialTokenResult, Date.now(), durationSecRef.current);
+        }
+      } catch (e: unknown) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        onErrorRef.current?.(err);
+      }
+    })();
+
+    return () => {
+      effectCancelled = true;
+      clearSdkRefreshTimer();
+      scheduleSdkTokenRefreshRef.current = () => {};
+      destroyRealtimeSession();
+      prevExternalFederatedTokenRef.current = undefined;
+    };
+  }, [
+    federatedTokenModeKey,
     cameraUuid,
     connectionMode,
     overrideBase,
     federatedPath,
     mediaPath,
     resolvedRhombusBase,
-    tokenDurationSec,
-    federatedSessionToken,
     useDirectRhombusApi,
     usedDefaultFederatedPath,
+    usedDefaultMediaPath,
+    realtimeStreamQuality,
+  ]);
+
+  useEffect(() => {
+    if (!sdkManagedFederatedToken) return;
+    if (!destroySessionRef.current) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        clearSdkRefreshTimer();
+        const requestHeaders = await mergeRequestHeaders(
+          headersRef.current,
+          getRequestHeadersRef.current
+        );
+        const tokenUrl = useDirectRhombusApi
+          ? joinUrl(getBrowserOrigin(), federatedPath)
+          : joinUrl(overrideBase!, federatedPath);
+        const next = await fetchFederatedSessionToken(
+          tokenUrl,
+          requestHeaders,
+          tokenDurationSec,
+          usedDefaultFederatedPath
+        );
+        if (cancelled || !destroySessionRef.current) return;
+        tokenRef.current = next.federatedSessionToken;
+        const wsUrl = await resolveLiveH264WebSocketUrl({
+          useDirectRhombusApi,
+          overrideBase,
+          rhombusApiBaseUrl: resolvedRhombusBase,
+          mediaPath,
+          federatedSessionToken: tokenRef.current,
+          cameraUuid,
+          requestHeaders,
+          usedDefaultMediaPath,
+          connectionMode,
+          realtimeStreamQuality,
+        });
+        if (cancelled || !destroySessionRef.current) return;
+        const el = canvasRef.current;
+        if (!el) return;
+        destroyRealtimeSession();
+        destroySessionRef.current = startRhombusRealtimeSession({
+          wsUrl,
+          canvas: el,
+          onError: err => {
+            onErrorRef.current?.(err);
+          },
+          onReady: () => {
+            if (!realtimeReadyFiredRef.current) {
+              realtimeReadyFiredRef.current = true;
+              onReadyRef.current?.();
+            }
+          },
+        });
+        scheduleSdkTokenRefreshRef.current(next, Date.now(), tokenDurationSec);
+      } catch (e: unknown) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        onErrorRef.current?.(err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    tokenDurationSec,
+    sdkManagedFederatedToken,
+    useDirectRhombusApi,
+    overrideBase,
+    federatedPath,
+    usedDefaultFederatedPath,
+    cameraUuid,
+    connectionMode,
+    mediaPath,
+    resolvedRhombusBase,
     usedDefaultMediaPath,
     realtimeStreamQuality,
   ]);

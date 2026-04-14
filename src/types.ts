@@ -43,12 +43,14 @@ export type RhombusBufferedPlayerProps = {
   paths?: RhombusPlayerPaths;
   /**
    * When set, this token is used for media requests and the SDK does not call the federated-token endpoint.
-   * Must be non-empty. When the value changes, media URIs are re-fetched and the player is re-created.
+   * Must be non-empty. Updates apply without tearing down Dash.js (segment URLs read the latest token).
+   * You are responsible for minting and refreshing the token; when it changes, realtime WebSocket reconnects.
    */
   federatedSessionToken?: string;
   /**
-   * Federated token duration in seconds (sent to your token endpoint only when the SDK fetches the token).
+   * Federated token duration in seconds (sent to your token endpoint when the SDK fetches or re-fetches the token).
    * Default: 86400 (24h). Ignored when `federatedSessionToken` is provided.
+   * Changing this re-mints with the new duration without resetting the DASH player (SDK-managed mode only).
    */
   tokenDurationSec?: number;
   /** Static headers for your token endpoint `fetch` (and for media when using `apiOverrideBaseUrl`). */
@@ -91,7 +93,13 @@ export type RhombusRealtimePlayerProps = {
   apiOverrideBaseUrl?: string;
   rhombusApiBaseUrl?: string;
   paths?: RhombusPlayerPaths;
+  /**
+   * When set, skips the token `fetch`. Rotate by passing a new string; realtime reconnects, DASH does not remount.
+   */
   federatedSessionToken?: string;
+  /**
+   * Same as buffered player: SDK-managed token TTL and refresh schedule. Ignored when `federatedSessionToken` is set.
+   */
   tokenDurationSec?: number;
   headers?: HeadersInit;
   getRequestHeaders?: () => HeadersInit | Promise<HeadersInit>;

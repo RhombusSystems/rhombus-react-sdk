@@ -16,6 +16,80 @@ export type RhombusDashQualityCallbacks = {
   getApplyBufferedStreamQuality: () => boolean;
 };
 
+/** Dash.js RequestModifier reads the latest token on every request (rotation without player teardown). */
+export type RhombusDashPlayerCallbacks = RhombusDashQualityCallbacks & {
+  getFederatedSessionToken: () => string;
+};
+
+/** Successful federated-token `POST` response shape (required + optional server hints). */
+export type FederatedTokenFetchResult = {
+  federatedSessionToken: string;
+  /** Seconds until expiry, if your token endpoint includes it (caps refresh scheduling). */
+  expiresInSec?: number;
+  /** Unix epoch ms when the token expires, if your token endpoint includes it. */
+  expiresAtMs?: number;
+};
+
+function parseFederatedTokenExpiryHints(tokenJson: unknown): Pick<
+  FederatedTokenFetchResult,
+  "expiresInSec" | "expiresAtMs"
+> {
+  if (typeof tokenJson !== "object" || tokenJson === null) {
+    return {};
+  }
+  const o = tokenJson as Record<string, unknown>;
+  let expiresInSec: number | undefined;
+  if (
+    "expiresInSec" in o &&
+    typeof o.expiresInSec === "number" &&
+    Number.isFinite(o.expiresInSec)
+  ) {
+    expiresInSec = o.expiresInSec;
+  }
+  let expiresAtMs: number | undefined;
+  if (
+    "expiresAtMs" in o &&
+    typeof o.expiresAtMs === "number" &&
+    Number.isFinite(o.expiresAtMs)
+  ) {
+    expiresAtMs = o.expiresAtMs;
+  } else if ("expiresAt" in o) {
+    const v = o.expiresAt;
+    if (typeof v === "number" && Number.isFinite(v)) {
+      expiresAtMs = v < 1e12 ? v * 1000 : v;
+    } else if (typeof v === "string") {
+      const parsed = Date.parse(v);
+      if (!Number.isNaN(parsed)) {
+        expiresAtMs = parsed;
+      }
+    }
+  }
+  return { expiresInSec, expiresAtMs };
+}
+
+/**
+ * Delay before refreshing the federated token (~97% of effective TTL).
+ * Effective TTL is the minimum of the requested duration and any server-provided expiry hints.
+ */
+export function getFederatedTokenRefreshDelayMs(args: {
+  requestedDurationSec: number;
+  fetchedAtMs: number;
+  expiryHint?: Pick<FederatedTokenFetchResult, "expiresInSec" | "expiresAtMs">;
+}): number {
+  const requestedTtlMs = Math.max(1, args.requestedDurationSec) * 1000;
+  let cappedTtlMs = requestedTtlMs;
+  const hint = args.expiryHint;
+  if (hint?.expiresInSec != null && Number.isFinite(hint.expiresInSec)) {
+    cappedTtlMs = Math.min(cappedTtlMs, Math.max(0, hint.expiresInSec) * 1000);
+  }
+  if (hint?.expiresAtMs != null && Number.isFinite(hint.expiresAtMs)) {
+    const remaining = hint.expiresAtMs - args.fetchedAtMs;
+    cappedTtlMs = Math.min(cappedTtlMs, Math.max(0, remaining));
+  }
+  const delay = Math.floor(cappedTtlMs * 0.97);
+  return Math.max(1000, delay);
+}
+
 export const DEFAULT_RHOMBUS_API_BASE_URL = "https://api2.rhombussystems.com/api";
 
 const LOG_PREFIX = "[RhombusBufferedPlayer]";
@@ -74,7 +148,7 @@ export async function fetchFederatedSessionToken(
   requestHeaders: HeadersInit,
   tokenDurationSec: number,
   usedDefaultFederatedPath: boolean
-): Promise<string> {
+): Promise<FederatedTokenFetchResult> {
   const tokenRes = await fetch(absoluteUrl, {
     method: "POST",
     headers: requestHeaders,
@@ -102,7 +176,8 @@ export async function fetchFederatedSessionToken(
   if (!federatedSessionToken) {
     throw new Error("Invalid federated token response: missing federatedSessionToken");
   }
-  return federatedSessionToken;
+  const hints = parseFederatedTokenExpiryHints(tokenJson);
+  return { federatedSessionToken, ...hints };
 }
 
 export async function fetchWanLiveMpdUriViaOverride(
@@ -178,9 +253,8 @@ export async function fetchWanLiveMpdUriDirect(
 export function createRhombusDashPlayer(
   videoEl: HTMLVideoElement,
   wanLiveMpdUri: string,
-  federatedSessionToken: string,
   onDashError: (e: DashJSErrorEvent) => void,
-  qualityCallbacks: RhombusDashQualityCallbacks
+  callbacks: RhombusDashPlayerCallbacks
 ): MediaPlayerClass {
   const player = MediaPlayer().create();
 
@@ -190,13 +264,13 @@ export function createRhombusDashPlayer(
       return {
         modifyRequestURL: (url: string) => {
           let next = url;
-          if (qualityCallbacks.getApplyBufferedStreamQuality()) {
+          if (callbacks.getApplyBufferedStreamQuality()) {
             next = appendResolutionModifiers(
               next,
-              getResolutionModifiersForBufferedStream(qualityCallbacks.getBufferedStreamQuality())
+              getResolutionModifiersForBufferedStream(callbacks.getBufferedStreamQuality())
             );
           }
-          return appendFederatedAuthQueryParams(next, federatedSessionToken);
+          return appendFederatedAuthQueryParams(next, callbacks.getFederatedSessionToken());
         },
       };
     },
