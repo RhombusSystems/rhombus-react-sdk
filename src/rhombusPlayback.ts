@@ -8,7 +8,12 @@ import {
   appendResolutionModifiers,
   getResolutionModifiersForBufferedStream,
 } from "./resolutionModifiers.js";
-import type { RhombusBufferedStreamQuality, RhombusBufferedPlayerProps } from "./types.js";
+import { firstMediaUri } from "./mediaUriPick.js";
+import type {
+  RhombusBufferedStreamQuality,
+  RhombusBufferedPlayerProps,
+  RhombusConnectionMode,
+} from "./types.js";
 import { appendFederatedAuthQueryParams, joinUrl } from "./urlAuth.js";
 
 export type RhombusDashQualityCallbacks = {
@@ -131,16 +136,25 @@ export async function mergeRequestHeaders(
   return out;
 }
 
-function parseWanLiveMpdUri(mediaJson: unknown): string | undefined {
-  if (
-    typeof mediaJson === "object" &&
-    mediaJson !== null &&
-    "wanLiveMpdUri" in mediaJson &&
-    typeof (mediaJson as { wanLiveMpdUri: unknown }).wanLiveMpdUri === "string"
-  ) {
-    return (mediaJson as { wanLiveMpdUri: string }).wanLiveMpdUri;
+function pickLiveMpdUri(mediaJson: unknown, connectionMode: RhombusConnectionMode): string {
+  if (typeof mediaJson !== "object" || mediaJson === null) {
+    throw new Error("Invalid media URIs response");
   }
-  return undefined;
+  const record = mediaJson as Record<string, unknown>;
+  if (connectionMode === "wan") {
+    const uri = record.wanLiveMpdUri;
+    if (typeof uri !== "string" || !uri.trim()) {
+      throw new Error("Invalid media URIs response: missing wanLiveMpdUri");
+    }
+    return uri.trim();
+  }
+  const raw = firstMediaUri(record.lanLiveMpdUris) ?? firstMediaUri(record.lanLiveMpdUri);
+  if (!raw) {
+    throw new Error(
+      "Invalid media URIs response: missing or empty lanLiveMpdUri or lanLiveMpdUris"
+    );
+  }
+  return raw;
 }
 
 export async function fetchFederatedSessionToken(
@@ -180,11 +194,12 @@ export async function fetchFederatedSessionToken(
   return { federatedSessionToken, ...hints };
 }
 
-export async function fetchWanLiveMpdUriViaOverride(
+export async function fetchLiveMpdUriViaOverride(
   absoluteUrl: string,
   requestHeaders: HeadersInit,
   cameraUuid: string,
-  usedDefaultMediaPath: boolean
+  usedDefaultMediaPath: boolean,
+  connectionMode: RhombusConnectionMode
 ): Promise<string> {
   const mediaRes = await fetch(absoluteUrl, {
     method: "POST",
@@ -201,18 +216,15 @@ export async function fetchWanLiveMpdUriViaOverride(
     throw new Error(`Media URIs request failed: ${mediaRes.status} ${mediaRes.statusText}`);
   }
   const mediaJson: unknown = await mediaRes.json();
-  const wanLiveMpdUri = parseWanLiveMpdUri(mediaJson);
-  if (!wanLiveMpdUri) {
-    throw new Error("Invalid media URIs response: missing wanLiveMpdUri");
-  }
-  return wanLiveMpdUri;
+  return pickLiveMpdUri(mediaJson, connectionMode);
 }
 
-export async function fetchWanLiveMpdUriDirect(
+export async function fetchLiveMpdUriDirect(
   rhombusApiBaseUrl: string,
   mediaPath: string,
   federatedSessionToken: string,
-  cameraUuid: string
+  cameraUuid: string,
+  connectionMode: RhombusConnectionMode
 ): Promise<string> {
   const absoluteUrl = joinUrl(rhombusApiBaseUrl, mediaPath);
   try {
@@ -235,11 +247,7 @@ export async function fetchWanLiveMpdUriDirect(
       throw new Error(`Media URIs request failed: ${mediaRes.status} ${mediaRes.statusText}`);
     }
     const mediaJson: unknown = await mediaRes.json();
-    const wanLiveMpdUri = parseWanLiveMpdUri(mediaJson);
-    if (!wanLiveMpdUri) {
-      throw new Error("Invalid media URIs response: missing wanLiveMpdUri");
-    }
-    return wanLiveMpdUri;
+    return pickLiveMpdUri(mediaJson, connectionMode);
   } catch (e: unknown) {
     if (e instanceof TypeError) {
       console.error(
@@ -252,7 +260,7 @@ export async function fetchWanLiveMpdUriDirect(
 
 export function createRhombusDashPlayer(
   videoEl: HTMLVideoElement,
-  wanLiveMpdUri: string,
+  manifestUri: string,
   onDashError: (e: DashJSErrorEvent) => void,
   callbacks: RhombusDashPlayerCallbacks
 ): MediaPlayerClass {
@@ -281,7 +289,7 @@ export function createRhombusDashPlayer(
 
   player.on(MediaPlayer.events.ERROR, onDashError, undefined);
 
-  player.initialize(videoEl, wanLiveMpdUri, true);
+  player.initialize(videoEl, manifestUri, true);
   return player;
 }
 

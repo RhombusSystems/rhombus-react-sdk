@@ -6,6 +6,9 @@ export type RhombusBufferedStreamQuality = "HIGH" | "MEDIUM" | "LOW";
 /** Live realtime WebSocket: SD uses `/wsl` instead of `/ws` (Rhombus Console `RealtimeResolutionQuality`). */
 export type RhombusRealtimeStreamQuality = "HD" | "SD";
 
+/** WAN vs LAN media selection from `getMediaUris` (buffered DASH and realtime WebSocket). */
+export type RhombusConnectionMode = "wan" | "lan";
+
 export type RhombusPlayerPaths = {
   /**
    * POST path for federated session token. Resolved against `apiOverrideBaseUrl` when set, otherwise against
@@ -23,6 +26,12 @@ export type RhombusPlayerPaths = {
 export type RhombusBufferedPlayerProps = {
   /** Camera UUID from Rhombus (safe to use in the browser). */
   cameraUuid: string;
+  /**
+   * `wan`: use `wanLiveMpdUri` from `getMediaUris`.
+   * `lan`: use `lanLiveMpdUris` (or `lanLiveMpdUri` if present). First entry wins; same idea as realtime LAN.
+   * Default `wan`. Changing mode re-initializes Dash.js.
+   */
+  connectionMode?: RhombusConnectionMode;
   /**
    * Optional base URL for HTTP requests that **override** the defaults. When **set**, both the federated-token
    * request and the media-URIs request use this base: `joinUrl(apiOverrideBaseUrl, paths.federatedToken)` and
@@ -66,8 +75,9 @@ export type RhombusBufferedPlayerProps = {
    */
   bufferedStreamQuality?: RhombusBufferedStreamQuality;
   /**
-   * When `false`, omit `_ds` modifiers (e.g. LAN or when server downscale should not be requested).
-   * Default `true`.
+   * When `false`, omit `_ds` modifiers. Default `true`.
+   * Applies on both WAN and LAN manifests/segments when `true` (Rhombus Console often omits LAN downscale in the UI;
+   * use `false` if you want full-resolution LAN only).
    */
   applyBufferedStreamQuality?: boolean;
   /** Extra props passed to the underlying `<video>` element. */
@@ -80,7 +90,7 @@ export type RhombusBufferedPlayerProps = {
   onError?: (error: Error) => void;
 };
 
-export type RhombusRealtimeConnectionMode = "wan" | "lan";
+export type RhombusRealtimeConnectionMode = RhombusConnectionMode;
 
 export type RhombusRealtimePlayerProps = {
   cameraUuid: string;

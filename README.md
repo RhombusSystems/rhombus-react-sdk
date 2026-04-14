@@ -33,6 +33,15 @@ See the Rhombus [**Generate federated session token**](https://docs.rhombus.com/
 
 Under the hood: the SDK **`POST`**s to **`window.location.origin` + `paths.federatedToken`** (default **`/api/federated-token`**), then **`POST`**s **media URIs** to Rhombus (`rhombusApiBaseUrl`, default **`https://api2.rhombussystems.com/api`**, path default **`/camera/getMediaUris`**) with federated auth headers.
 
+### Buffered DASH: `connectionMode` (WAN vs LAN)
+
+**`RhombusBufferedPlayer`** uses the same **`getMediaUris`** response as realtime:
+
+- **`connectionMode="wan"`** (default) — reads **`wanLiveMpdUri`** and plays the cloud / WAN manifest with Dash.js.
+- **`connectionMode="lan"`** — reads **`lanLiveMpdUris`** (or **`lanLiveMpdUri`** if present); the **first** non-empty entry is used (same selection idea as **`RhombusRealtimePlayer`** LAN). The page must be able to reach that host (routing, firewall, **HTTPS vs HTTP** mixed-content rules). Manifest and segments still get **`x-auth-scheme=federated-token`** and **`x-auth-ft`** on the URL query string.
+
+**`bufferedStreamQuality`** / **`applyBufferedStreamQuality`** apply on LAN the same as WAN (query **`_ds`** on manifest and segments). Rhombus Console often hides quality controls on LAN; set **`applyBufferedStreamQuality={false}`** if you want full-resolution LAN only.
+
 ### Federated token refresh (SDK-managed)
 
 When **`federatedSessionToken` is omitted**, the SDK periodically re-fetches the token from your **`POST`** federated-token route so streams outlive a single token TTL. The next refresh is scheduled at approximately **97%** of the effective lifetime, where effective lifetime is the minimum of:
@@ -80,10 +89,10 @@ You can change how aggressively Rhombus serves **live** video without touching t
 
 ### DASH — `RhombusBufferedPlayer`
 
-- **`bufferedStreamQuality`**: `"HIGH"` (default) | `"MEDIUM"` | `"LOW"`. Each step asks Rhombus to downscale on the **server** by adding a `_ds=…` query on **segment and manifest** URLs (same idea as Rhombus Console buffered quality). Dash.js ABR stays off; quality follows this setting.
-- **`applyBufferedStreamQuality`**: default **`true`**. Set **`false`** to omit `_ds` entirely (for example when you know the viewer is on LAN and should not trigger WAN downscale logic).
+- **`bufferedStreamQuality`**: `"HIGH"` (default) | `"MEDIUM"` | `"LOW"`. Each step asks Rhombus to downscale on the **server** by adding a `_ds=…` query on **segment and manifest** URLs (same idea as Rhombus Console buffered quality). Works for **`connectionMode="wan"`** and **`"lan"`**. Dash.js ABR stays off; quality follows this setting.
+- **`applyBufferedStreamQuality`**: default **`true`**. Set **`false`** to omit **`_ds`** entirely (WAN or LAN).
 
-Changing **`bufferedStreamQuality`** or **`applyBufferedStreamQuality`** does **not** re-fetch the MPD or federated token—the Dash **`RequestModifier`** reads the latest values on each request, so a simple prop update is enough.
+Changing **`bufferedStreamQuality`** or **`applyBufferedStreamQuality`** does **not** re-fetch the MPD or federated token—the Dash **`RequestModifier`** reads the latest values on each request, so a simple prop update is enough. Changing **`connectionMode`** re-initializes Dash.js.
 
 ### Realtime WebSocket — `RhombusRealtimePlayer`
 
@@ -91,7 +100,7 @@ Changing **`bufferedStreamQuality`** or **`applyBufferedStreamQuality`** does **
 
 Changing **`realtimeStreamQuality`** **closes and reopens** the WebSocket, so expect a short blip—there is no in-place path switch.
 
-Types are exported as **`RhombusBufferedStreamQuality`** and **`RhombusRealtimeStreamQuality`**.
+Types are exported as **`RhombusBufferedStreamQuality`**, **`RhombusRealtimeStreamQuality`**, **`RhombusConnectionMode`** (also **`RhombusRealtimeConnectionMode`**, an alias), and **`RhombusBufferedPlayerProps`** / **`RhombusRealtimePlayerProps`**.
 
 ```tsx
 import {
@@ -164,7 +173,8 @@ Shared and **RhombusBufferedPlayer**-specific:
 | `federatedSessionToken` | If set, skips the token `fetch`; you supply rotation. DASH uses the latest value without teardown; realtime reconnects when the prop changes. |
 | `tokenDurationSec` | Requested token TTL (seconds) for SDK-managed fetch/refresh. Default `86400`. Changing it re-mints without resetting DASH. |
 | `headers` / `getRequestHeaders` | Merged into the **federated-token** request always; into the **media-URIs** request only when `apiOverrideBaseUrl` is set. Not sent to Rhombus in direct mode. |
-| `bufferedStreamQuality` | **RhombusBufferedPlayer** only. `HIGH` \| `MEDIUM` \| `LOW`. Server downscale via `_ds` on DASH requests. Default `HIGH`. Updating does not re-fetch the manifest. |
+| `connectionMode` | **RhombusBufferedPlayer** optional, default `wan`. `wan` → `wanLiveMpdUri`; `lan` → `lanLiveMpdUris` / `lanLiveMpdUri` (first entry). Changing it re-initializes Dash.js. |
+| `bufferedStreamQuality` | **RhombusBufferedPlayer** only. `HIGH` \| `MEDIUM` \| `LOW`. Server downscale via `_ds` on DASH requests (WAN and LAN). Default `HIGH`. Updating does not re-fetch the manifest. |
 | `applyBufferedStreamQuality` | **RhombusBufferedPlayer** only. Default `true`. If `false`, `_ds` is not appended. |
 
 **RhombusRealtimePlayer** also accepts everything above that applies to token/media resolution, plus:
@@ -192,7 +202,7 @@ Your server should expose **`POST`** (default **`/api/federated-token`**):
 Your server exposes two **`POST`** JSON endpoints (paths configurable; defaults **`/api/federated-token`** and **`/api/media-uris`**):
 
 1. **Federated token** — as above.
-2. **Media URIs** — body `{ "cameraUuid": string }`; response must include `wanLiveMpdUri`. Forward to Rhombus `POST /camera/getMediaUris`.
+2. **Media URIs** — body `{ "cameraUuid": string }`; forward the Rhombus `POST /camera/getMediaUris` JSON. For WAN DASH the response must include **`wanLiveMpdUri`**. For LAN DASH (`connectionMode="lan"`), the browser needs **`lanLiveMpdUris`** (or **`lanLiveMpdUri`**) from that same payload—return the upstream object as-is so those fields are present when Rhombus provides them.
 
 The player appends `x-auth-scheme=federated-token` and `x-auth-ft=<token>` to all media segment requests. See the [Rhombus player-example](https://github.com/rhombussystems/player-example) and `ai-context.md`.
 

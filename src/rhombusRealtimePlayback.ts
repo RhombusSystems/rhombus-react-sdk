@@ -1,22 +1,9 @@
+import { firstMediaUri } from "./mediaUriPick.js";
 import { formatWebsocketResolutionUri } from "./resolutionModifiers.js";
 import type { RhombusRealtimeConnectionMode, RhombusRealtimeStreamQuality } from "./types.js";
 import { appendFederatedAuthQueryParams, joinUrl } from "./urlAuth.js";
 
 const LOG_PREFIX = "[RhombusRealtimePlayer]";
-
-function firstMediaUri(value: unknown): string | undefined {
-  if (typeof value === "string" && value.trim()) {
-    return value.trim();
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      if (typeof item === "string" && item.trim()) {
-        return item.trim();
-      }
-    }
-  }
-  return undefined;
-}
 
 /**
  * Rhombus `getMediaUris` returns LAN realtime as `lanLiveH264Uris` (array).

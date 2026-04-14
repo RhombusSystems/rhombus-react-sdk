@@ -6,8 +6,8 @@ import {
   DEFAULT_RHOMBUS_API_BASE_URL,
   destroyRhombusDashPlayer,
   fetchFederatedSessionToken,
-  fetchWanLiveMpdUriDirect,
-  fetchWanLiveMpdUriViaOverride,
+  fetchLiveMpdUriDirect,
+  fetchLiveMpdUriViaOverride,
   getBrowserOrigin,
   getFederatedTokenRefreshDelayMs,
   mergeRequestHeaders,
@@ -21,6 +21,7 @@ const DEFAULT_MEDIA_PATH_DIRECT = "/camera/getMediaUris";
 
 export function RhombusBufferedPlayer({
   cameraUuid,
+  connectionMode,
   apiOverrideBaseUrl,
   rhombusApiBaseUrl,
   paths,
@@ -70,6 +71,7 @@ export function RhombusBufferedPlayer({
 
   bufferedQRef.current = bufferedStreamQuality ?? "HIGH";
   applyBQRef.current = applyBufferedStreamQuality !== false;
+  const effectiveConnectionMode = connectionMode ?? "wan";
 
   const effectiveBufferedQuality = bufferedStreamQuality ?? "HIGH";
   const effectiveApplyBuffered = applyBufferedStreamQuality !== false;
@@ -189,20 +191,22 @@ export function RhombusBufferedPlayer({
           tokenRef.current = federatedSessionToken;
         }
 
-        let wanLiveMpdUri: string;
+        let manifestUri: string;
         if (useDirectRhombusApi) {
-          wanLiveMpdUri = await fetchWanLiveMpdUriDirect(
+          manifestUri = await fetchLiveMpdUriDirect(
             resolvedRhombusBase,
             mediaPath,
             tokenRef.current,
-            cameraUuid
+            cameraUuid,
+            effectiveConnectionMode
           );
         } else {
-          wanLiveMpdUri = await fetchWanLiveMpdUriViaOverride(
+          manifestUri = await fetchLiveMpdUriViaOverride(
             joinUrl(overrideBase!, mediaPath),
             requestHeaders,
             cameraUuid,
-            usedDefaultMediaPath
+            usedDefaultMediaPath,
+            effectiveConnectionMode
           );
         }
 
@@ -213,7 +217,7 @@ export function RhombusBufferedPlayer({
 
         player = createRhombusDashPlayer(
           el,
-          wanLiveMpdUri,
+          manifestUri,
           handleDashError,
           dashPlayerCallbacksRef.current!
         );
@@ -242,6 +246,7 @@ export function RhombusBufferedPlayer({
   }, [
     federatedTokenModeKey,
     cameraUuid,
+    effectiveConnectionMode,
     overrideBase,
     federatedPath,
     mediaPath,
@@ -308,7 +313,7 @@ export function RhombusBufferedPlayer({
     } catch {
       /* ignore */
     }
-  }, [effectiveBufferedQuality, effectiveApplyBuffered]);
+  }, [effectiveBufferedQuality, effectiveApplyBuffered, effectiveConnectionMode]);
 
   return (
     <video

@@ -3,6 +3,7 @@ export { RhombusRealtimePlayer } from "./RhombusRealtimePlayer.js";
 export type {
   RhombusBufferedStreamQuality,
   RhombusBufferedPlayerProps,
+  RhombusConnectionMode,
   RhombusPlayerPaths,
   RhombusRealtimeConnectionMode,
   RhombusRealtimePlayerProps,
