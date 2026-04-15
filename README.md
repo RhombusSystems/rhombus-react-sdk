@@ -31,7 +31,7 @@ export function CameraView() {
 
 See the Rhombus [**Generate federated session token**](https://docs.rhombus.com/#927fe3b3-7e39-4709-9d4e-8d3da95940cd) API docs. If something fails, check the browser console for **`[RhombusBufferedPlayer]`** messages.
 
-Under the hood: the SDK **`POST`**s to **`window.location.origin` + `paths.federatedToken`** (default **`/api/federated-token`**), then **`POST`**s **media URIs** to Rhombus (`rhombusApiBaseUrl`, default **`https://api2.rhombussystems.com/api`**, path default **`/camera/getMediaUris`**) with federated auth headers.
+Under the hood: the SDK **`POST`**s to **`window.location.origin` + `paths.federatedToken`** (default **`/api/federated-token`**), then **`POST`**s **media URIs** directly to the Rhombus API (`rhombusApiBaseUrl`, default **`https://api2.rhombussystems.com/api`**, path default **`/camera/getMediaUris`**) with federated auth headers. For this direct browser request to succeed, your server must include a **`domain`** field when calling Rhombus [**`generateFederatedSessionToken`**](https://docs.rhombus.com/#927fe3b3-7e39-4709-9d4e-8d3da95940cd) — `domain` authorizes the browser's origin to call `api2.rhombussystems.com` with the token. Without it, the request will be blocked by CORS or rejected with a 401/403. Alternatively, set **`apiOverrideBaseUrl`** (or override **`paths.mediaUris`**) to route media-URI requests through your own backend, avoiding direct browser-to-Rhombus calls entirely.
 
 ### Buffered DASH: `connectionMode` (WAN vs LAN)
 
