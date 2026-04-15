@@ -1,6 +1,6 @@
 {
   "name": "@rhombussystems/react",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "React components for Rhombus camera streaming (DASH via Dash.js and realtime H.264 via WebSocket + WebCodecs)",
   "license": "MIT",
   "author": "Rhombus Systems",

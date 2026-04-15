@@ -3,7 +3,7 @@ import {
   type ErrorEvent as DashJSErrorEvent,
   type MediaPlayerClass,
 } from "dashjs";
-import { getDefaultRhombusDashSettings } from "./dashSettings.js";
+import { getDefaultRhombusDashSettings, getDefaultRhombusVodDashSettings } from "./dashSettings.js";
 import {
   appendResolutionModifiers,
   getResolutionModifiersForBufferedStream,
@@ -157,6 +157,44 @@ function pickLiveMpdUri(mediaJson: unknown, connectionMode: RhombusConnectionMod
   return raw;
 }
 
+function pickVodMpdUriTemplate(
+  mediaJson: unknown,
+  connectionMode: RhombusConnectionMode
+): string {
+  if (typeof mediaJson !== "object" || mediaJson === null) {
+    throw new Error("Invalid media URIs response");
+  }
+  const record = mediaJson as Record<string, unknown>;
+  if (connectionMode === "wan") {
+    const uri = record.wanVodMpdUriTemplate;
+    if (typeof uri !== "string" || !uri.trim()) {
+      throw new Error("Invalid media URIs response: missing wanVodMpdUriTemplate");
+    }
+    return uri.trim();
+  }
+  const raw = firstMediaUri(record.lanVodMpdUrisTemplates);
+  if (!raw) {
+    throw new Error(
+      "Invalid media URIs response: missing or empty lanVodMpdUrisTemplates"
+    );
+  }
+  return raw;
+}
+
+/**
+ * Replace `{START_TIME}` and `{DURATION}` placeholders in a Rhombus VOD MPD URI template.
+ * Both values are in **seconds** (Unix epoch seconds for start, window length for duration).
+ */
+export function formatVodMpdUri(
+  template: string,
+  startTimeSec: number,
+  durationSec: number
+): string {
+  return template
+    .replace("{START_TIME}", String(Math.floor(startTimeSec)))
+    .replace("{DURATION}", String(Math.floor(durationSec)));
+}
+
 export async function fetchFederatedSessionToken(
   absoluteUrl: string,
   requestHeaders: HeadersInit,
@@ -258,6 +296,76 @@ export async function fetchLiveMpdUriDirect(
   }
 }
 
+export async function fetchVodMpdUriViaOverride(
+  absoluteUrl: string,
+  requestHeaders: HeadersInit,
+  cameraUuid: string,
+  usedDefaultMediaPath: boolean,
+  connectionMode: RhombusConnectionMode,
+  startTimeSec: number,
+  durationSec: number
+): Promise<string> {
+  const mediaRes = await fetch(absoluteUrl, {
+    method: "POST",
+    headers: requestHeaders,
+    body: JSON.stringify({ cameraUuid }),
+  });
+  if (!mediaRes.ok) {
+    const hint = usedDefaultMediaPath
+      ? ` The default path segment is /api/media-uris. Implement that route or set paths={{ mediaUris: '/your/path' }}.`
+      : ` Verify paths.mediaUris and apiOverrideBaseUrl match your server.`;
+    console.error(
+      `${LOG_PREFIX} Media URIs request failed (${mediaRes.status} ${mediaRes.statusText}) for ${absoluteUrl}.${hint}`
+    );
+    throw new Error(`Media URIs request failed: ${mediaRes.status} ${mediaRes.statusText}`);
+  }
+  const mediaJson: unknown = await mediaRes.json();
+  const template = pickVodMpdUriTemplate(mediaJson, connectionMode);
+  return formatVodMpdUri(template, startTimeSec, durationSec);
+}
+
+export async function fetchVodMpdUriDirect(
+  rhombusApiBaseUrl: string,
+  mediaPath: string,
+  federatedSessionToken: string,
+  cameraUuid: string,
+  connectionMode: RhombusConnectionMode,
+  startTimeSec: number,
+  durationSec: number
+): Promise<string> {
+  const absoluteUrl = joinUrl(rhombusApiBaseUrl, mediaPath);
+  try {
+    const mediaRes = await fetch(absoluteUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "x-auth-scheme": "federated-token",
+        "x-auth-ft": federatedSessionToken,
+      },
+      body: JSON.stringify({ cameraUuid }),
+    });
+    if (!mediaRes.ok) {
+      if (mediaRes.status === 401 || mediaRes.status === 403) {
+        console.error(
+          `${LOG_PREFIX} Media URIs request rejected (${mediaRes.status}). Check the federated session token and that generateFederatedSessionToken was called with a "domain" that allows this page origin to call the Rhombus API.`
+        );
+      }
+      throw new Error(`Media URIs request failed: ${mediaRes.status} ${mediaRes.statusText}`);
+    }
+    const mediaJson: unknown = await mediaRes.json();
+    const template = pickVodMpdUriTemplate(mediaJson, connectionMode);
+    return formatVodMpdUri(template, startTimeSec, durationSec);
+  } catch (e: unknown) {
+    if (e instanceof TypeError) {
+      console.error(
+        `${LOG_PREFIX} Request to Rhombus API failed (${e.message}). If the browser blocked the request (CORS), the federated token may have been created without a matching "domain" for this origin. When calling generateFederatedSessionToken server-side, include "domain" so browser requests to api2.rhombussystems.com are allowed. See SDK README.`
+      );
+    }
+    throw e;
+  }
+}
+
 export function createRhombusDashPlayer(
   videoEl: HTMLVideoElement,
   manifestUri: string,
@@ -290,6 +398,43 @@ export function createRhombusDashPlayer(
   player.on(MediaPlayer.events.ERROR, onDashError, undefined);
 
   player.initialize(videoEl, manifestUri, true);
+  return player;
+}
+
+export function createRhombusVodDashPlayer(
+  videoEl: HTMLVideoElement,
+  manifestUri: string,
+  seekOffsetSec: number,
+  onDashError: (e: DashJSErrorEvent) => void,
+  callbacks: RhombusDashPlayerCallbacks
+): MediaPlayerClass {
+  const player = MediaPlayer().create();
+
+  player.extend(
+    "RequestModifier",
+    function () {
+      return {
+        modifyRequestURL: (url: string) => {
+          let next = url;
+          if (callbacks.getApplyBufferedStreamQuality()) {
+            next = appendResolutionModifiers(
+              next,
+              getResolutionModifiersForBufferedStream(callbacks.getBufferedStreamQuality())
+            );
+          }
+          return appendFederatedAuthQueryParams(next, callbacks.getFederatedSessionToken());
+        },
+      };
+    },
+    true
+  );
+
+  player.updateSettings(getDefaultRhombusVodDashSettings());
+
+  player.on(MediaPlayer.events.ERROR, onDashError, undefined);
+
+  player.initialize(videoEl, undefined, false);
+  player.attachSource(manifestUri, seekOffsetSec || undefined);
   return player;
 }
 

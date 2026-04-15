@@ -3,11 +3,14 @@ import type { ErrorEvent as DashJSErrorEvent, MediaPlayerClass } from "dashjs";
 import type { FederatedTokenFetchResult, RhombusDashPlayerCallbacks } from "./rhombusPlayback.js";
 import {
   createRhombusDashPlayer,
+  createRhombusVodDashPlayer,
   DEFAULT_RHOMBUS_API_BASE_URL,
   destroyRhombusDashPlayer,
   fetchFederatedSessionToken,
   fetchLiveMpdUriDirect,
   fetchLiveMpdUriViaOverride,
+  fetchVodMpdUriDirect,
+  fetchVodMpdUriViaOverride,
   getBrowserOrigin,
   getFederatedTokenRefreshDelayMs,
   mergeRequestHeaders,
@@ -19,6 +22,8 @@ const DEFAULT_FEDERATED_PATH = "/api/federated-token";
 const DEFAULT_MEDIA_PATH_OVERRIDE = "/api/media-uris";
 const DEFAULT_MEDIA_PATH_DIRECT = "/camera/getMediaUris";
 
+const DEFAULT_VOD_DURATION_SEC = 7200;
+
 export function RhombusBufferedPlayer({
   cameraUuid,
   connectionMode,
@@ -29,6 +34,9 @@ export function RhombusBufferedPlayer({
   tokenDurationSec = 86_400,
   headers,
   getRequestHeaders,
+  startTimeSec,
+  vodDurationSec = DEFAULT_VOD_DURATION_SEC,
+  seekOffsetSec = 0,
   videoProps,
   className,
   style,
@@ -86,6 +94,8 @@ export function RhombusBufferedPlayer({
   const usedDefaultMediaPath = paths?.mediaUris === undefined;
   const resolvedRhombusBase =
     rhombusApiBaseUrl?.trim() || DEFAULT_RHOMBUS_API_BASE_URL;
+
+  const isVod = startTimeSec != null;
 
   const sdkManagedFederatedToken = federatedSessionToken === undefined;
   const federatedTokenModeKey =
@@ -192,22 +202,46 @@ export function RhombusBufferedPlayer({
         }
 
         let manifestUri: string;
-        if (useDirectRhombusApi) {
-          manifestUri = await fetchLiveMpdUriDirect(
-            resolvedRhombusBase,
-            mediaPath,
-            tokenRef.current,
-            cameraUuid,
-            effectiveConnectionMode
-          );
+        if (isVod) {
+          if (useDirectRhombusApi) {
+            manifestUri = await fetchVodMpdUriDirect(
+              resolvedRhombusBase,
+              mediaPath,
+              tokenRef.current,
+              cameraUuid,
+              effectiveConnectionMode,
+              startTimeSec,
+              vodDurationSec
+            );
+          } else {
+            manifestUri = await fetchVodMpdUriViaOverride(
+              joinUrl(overrideBase!, mediaPath),
+              requestHeaders,
+              cameraUuid,
+              usedDefaultMediaPath,
+              effectiveConnectionMode,
+              startTimeSec,
+              vodDurationSec
+            );
+          }
         } else {
-          manifestUri = await fetchLiveMpdUriViaOverride(
-            joinUrl(overrideBase!, mediaPath),
-            requestHeaders,
-            cameraUuid,
-            usedDefaultMediaPath,
-            effectiveConnectionMode
-          );
+          if (useDirectRhombusApi) {
+            manifestUri = await fetchLiveMpdUriDirect(
+              resolvedRhombusBase,
+              mediaPath,
+              tokenRef.current,
+              cameraUuid,
+              effectiveConnectionMode
+            );
+          } else {
+            manifestUri = await fetchLiveMpdUriViaOverride(
+              joinUrl(overrideBase!, mediaPath),
+              requestHeaders,
+              cameraUuid,
+              usedDefaultMediaPath,
+              effectiveConnectionMode
+            );
+          }
         }
 
         if (effectCancelled) return;
@@ -215,12 +249,20 @@ export function RhombusBufferedPlayer({
         const el = videoRef.current;
         if (!el) return;
 
-        player = createRhombusDashPlayer(
-          el,
-          manifestUri,
-          handleDashError,
-          dashPlayerCallbacksRef.current!
-        );
+        player = isVod
+          ? createRhombusVodDashPlayer(
+              el,
+              manifestUri,
+              seekOffsetSec,
+              handleDashError,
+              dashPlayerCallbacksRef.current!
+            )
+          : createRhombusDashPlayer(
+              el,
+              manifestUri,
+              handleDashError,
+              dashPlayerCallbacksRef.current!
+            );
         playerRef.current = player;
 
         if (sdkManagedFederatedToken && initialTokenResult !== null) {
@@ -254,6 +296,10 @@ export function RhombusBufferedPlayer({
     useDirectRhombusApi,
     usedDefaultFederatedPath,
     usedDefaultMediaPath,
+    isVod,
+    startTimeSec,
+    vodDurationSec,
+    seekOffsetSec,
   ]);
 
   useEffect(() => {
@@ -321,7 +367,7 @@ export function RhombusBufferedPlayer({
       className={className}
       style={style}
       playsInline
-      controls
+      controls={isVod}
       muted
       {...videoProps}
     />

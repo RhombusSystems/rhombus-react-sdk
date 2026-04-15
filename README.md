@@ -42,6 +42,40 @@ Under the hood: the SDK **`POST`**s to **`window.location.origin` + `paths.feder
 
 **`bufferedStreamQuality`** / **`applyBufferedStreamQuality`** apply on LAN the same as WAN (query **`_ds`** on manifest and segments). Rhombus Console often hides quality controls on LAN; set **`applyBufferedStreamQuality={false}`** if you want full-resolution LAN only.
 
+### VOD / historical footage
+
+**`RhombusBufferedPlayer`** also supports playing back recorded (VOD) footage from Rhombus cameras. Set **`startTimeSec`** to switch from live to VOD mode — when omitted the player streams live as before:
+
+```tsx
+import { RhombusBufferedPlayer } from "@rhombussystems/react";
+
+export function HistoricalView() {
+  // Play back footage starting at midnight UTC on 2025-04-15
+  const start = Math.floor(new Date("2025-04-15T00:00:00Z").getTime() / 1000);
+
+  return (
+    <RhombusBufferedPlayer
+      cameraUuid="YOUR_CAMERA_UUID"
+      startTimeSec={start}
+      vodDurationSec={3600}   // 1-hour manifest window (default 7200 = 2 hours)
+      seekOffsetSec={300}     // begin playback 5 minutes in
+    />
+  );
+}
+```
+
+| Prop | Role |
+|------|------|
+| `startTimeSec` | Unix epoch **seconds**. When set, the player fetches a VOD MPD URI template (`wanVodMpdUriTemplate` / `lanVodMpdUrisTemplates`) from `getMediaUris` instead of the live URI. Changing this value tears down and re-creates the Dash.js player with a new manifest. |
+| `vodDurationSec` | Length of the manifest window in seconds. Default `7200` (2 hours). Controls how far the user can seek forward within the loaded manifest before a new one is needed. |
+| `seekOffsetSec` | Offset in seconds from `startTimeSec` at which playback begins. Default `0`. |
+
+**How it works:** Rhombus `getMediaUris` returns VOD URI **templates** like `.../dash/web/outbound/{camera}/{session}/{START_TIME}/{DURATION}/vod/file.mpd` (WAN) or `.../store/{START_TIME}_{DURATION}/clip.mpd` (LAN). The SDK fills `{START_TIME}` and `{DURATION}` from your props, then initializes Dash.js with VOD-tuned settings (larger buffers, no live catchup, buffering while paused for scrubbing). Auth, quality modifiers, and connection mode work identically to live.
+
+**Sliding the window:** To navigate beyond the current manifest window, update `startTimeSec` in your app state. The player will tear down and re-attach with the new manifest. For example, a custom timeline control could update `startTimeSec` when the user drags past the window edge.
+
+**Advanced:** `formatVodMpdUri(template, startTimeSec, durationSec)` and `getDefaultRhombusVodDashSettings()` are exported for consumers who need to build VOD URLs or configure Dash.js themselves.
+
 ### Federated token refresh (SDK-managed)
 
 When **`federatedSessionToken` is omitted**, the SDK periodically re-fetches the token from your **`POST`** federated-token route so streams outlive a single token TTL. The next refresh is scheduled at approximately **97%** of the effective lifetime, where effective lifetime is the minimum of:
@@ -174,6 +208,9 @@ Shared and **RhombusBufferedPlayer**-specific:
 | `tokenDurationSec` | Requested token TTL (seconds) for SDK-managed fetch/refresh. Default `86400`. Changing it re-mints without resetting DASH. |
 | `headers` / `getRequestHeaders` | Merged into the **federated-token** request always; into the **media-URIs** request only when `apiOverrideBaseUrl` is set. Not sent to Rhombus in direct mode. |
 | `connectionMode` | **RhombusBufferedPlayer** optional, default `wan`. `wan` → `wanLiveMpdUri`; `lan` → `lanLiveMpdUris` / `lanLiveMpdUri` (first entry). Changing it re-initializes Dash.js. |
+| `startTimeSec` | **RhombusBufferedPlayer** only. Unix epoch seconds. When set, switches to VOD mode using `wanVodMpdUriTemplate` / `lanVodMpdUrisTemplates`. Omit for live. |
+| `vodDurationSec` | **RhombusBufferedPlayer** only. VOD manifest window length in seconds. Default `7200`. Only used when `startTimeSec` is set. |
+| `seekOffsetSec` | **RhombusBufferedPlayer** only. Playback start offset from `startTimeSec` in seconds. Default `0`. Only used when `startTimeSec` is set. |
 | `bufferedStreamQuality` | **RhombusBufferedPlayer** only. `HIGH` \| `MEDIUM` \| `LOW`. Server downscale via `_ds` on DASH requests (WAN and LAN). Default `HIGH`. Updating does not re-fetch the manifest. |
 | `applyBufferedStreamQuality` | **RhombusBufferedPlayer** only. Default `true`. If `false`, `_ds` is not appended. |
 
@@ -202,7 +239,7 @@ Your server should expose **`POST`** (default **`/api/federated-token`**):
 Your server exposes two **`POST`** JSON endpoints (paths configurable; defaults **`/api/federated-token`** and **`/api/media-uris`**):
 
 1. **Federated token** — as above.
-2. **Media URIs** — body `{ "cameraUuid": string }`; forward the Rhombus `POST /camera/getMediaUris` JSON. For WAN DASH the response must include **`wanLiveMpdUri`**. For LAN DASH (`connectionMode="lan"`), the browser needs **`lanLiveMpdUris`** (or **`lanLiveMpdUri`**) from that same payload—return the upstream object as-is so those fields are present when Rhombus provides them.
+2. **Media URIs** — body `{ "cameraUuid": string }`; forward the Rhombus `POST /camera/getMediaUris` JSON. For WAN DASH the response must include **`wanLiveMpdUri`** (live) or **`wanVodMpdUriTemplate`** (VOD). For LAN DASH (`connectionMode="lan"`), the browser needs **`lanLiveMpdUris`** / **`lanLiveMpdUri`** (live) or **`lanVodMpdUrisTemplates`** (VOD) from that same payload—return the upstream object as-is so those fields are present when Rhombus provides them.
 
 The player appends `x-auth-scheme=federated-token` and `x-auth-ft=<token>` to all media segment requests. See the [Rhombus player-example](https://github.com/rhombussystems/player-example) and `ai-context.md`.
 

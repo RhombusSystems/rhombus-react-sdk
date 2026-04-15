@@ -9,10 +9,11 @@ export type {
   RhombusRealtimePlayerProps,
   RhombusRealtimeStreamQuality,
 } from "./types.js";
-export { getDefaultRhombusDashSettings } from "./dashSettings.js";
+export { getDefaultRhombusDashSettings, getDefaultRhombusVodDashSettings } from "./dashSettings.js";
 export {
   fetchFederatedSessionToken,
   getFederatedTokenRefreshDelayMs,
+  formatVodMpdUri,
 } from "./rhombusPlayback.js";
 export type {
   FederatedTokenFetchResult,

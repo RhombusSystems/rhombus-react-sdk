@@ -70,6 +70,35 @@ export type RhombusBufferedPlayerProps = {
    */
   getRequestHeaders?: () => HeadersInit | Promise<HeadersInit>;
   /**
+   * Unix epoch **seconds** for the start of the VOD (historical footage) manifest window.
+   * When set, the player uses VOD MPD URI templates (`wanVodMpdUriTemplate` / `lanVodMpdUrisTemplates`)
+   * instead of live URIs. When omitted, the player operates in live mode (default).
+   *
+   * Changing this value tears down the current Dash.js instance and attaches a new manifest.
+   *
+   * @example
+   * ```ts
+   * // Play footage starting at midnight UTC on 2025-04-15
+   * startTimeSec={Math.floor(new Date("2025-04-15T00:00:00Z").getTime() / 1000)}
+   * ```
+   */
+  startTimeSec?: number;
+  /**
+   * Length of the VOD manifest window in seconds. Controls the `{DURATION}` template parameter
+   * and how far forward the user can seek within the manifest before a new one is needed.
+   *
+   * Default `7200` (2 hours). Only used when `startTimeSec` is set.
+   */
+  vodDurationSec?: number;
+  /**
+   * Offset in seconds from `startTimeSec` at which Dash.js should begin playback.
+   * For example, if `startTimeSec` points to midnight and `seekOffsetSec` is `300`,
+   * playback starts at 00:05:00.
+   *
+   * Default `0` (start of window). Only used when `startTimeSec` is set.
+   */
+  seekOffsetSec?: number;
+  /**
    * Live buffered DASH quality: adds `_ds` query params so Rhombus can downscale on the server.
    * Default `HIGH` (no extra modifiers). Changing this updates segment URLs without re-fetching the manifest.
    */

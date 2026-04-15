@@ -50,3 +50,45 @@ export function getDefaultRhombusDashSettings(): MediaPlayerSettingClass {
     },
   } as MediaPlayerSettingClass;
 }
+
+/**
+ * Default Dash.js streaming settings tuned for Rhombus VOD (historical footage) playback.
+ * Differs from live settings: no live catchup, allows buffering while paused for scrubbing,
+ * and larger initial/top-quality buffers for smoother seek.
+ */
+export function getDefaultRhombusVodDashSettings(): MediaPlayerSettingClass {
+  return {
+    streaming: {
+      scheduling: {
+        scheduleWhilePaused: true,
+        defaultTimeout: 5000,
+      },
+      capabilities: {
+        useMediaCapabilitiesApi: false,
+      },
+      gaps: {
+        jumpGaps: true,
+        jumpLargeGaps: true,
+        smallGapLimit: 1.5,
+        threshold: 0.3,
+        enableSeekFix: true,
+        enableStallFix: true,
+        stallSeek: 0.1,
+      },
+      buffer: {
+        flushBufferAtTrackSwitch: true,
+        fastSwitchEnabled: false,
+        initialBufferLevel: 30,
+        bufferTimeAtTopQuality: 60,
+        bufferTimeAtTopQualityLongForm: 60,
+        longFormContentDurationThreshold: 600,
+      },
+      abr: {
+        autoSwitchBitrate: {
+          video: false,
+          audio: false,
+        },
+      },
+    },
+  } as MediaPlayerSettingClass;
+}
