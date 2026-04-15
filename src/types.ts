@@ -109,6 +109,22 @@ export type RhombusBufferedPlayerProps = {
    * use `false` if you want full-resolution LAN only).
    */
   applyBufferedStreamQuality?: boolean;
+  /**
+   * Ceiling for the auto-recovery retry interval in milliseconds. When a recoverable dash.js
+   * error occurs (manifest load failure, segment download, etc.), the SDK destroys the player
+   * and recreates it with exponential backoff: 2s → 4s → 8s → 16s → … up to this cap.
+   * The SDK **never gives up** — it retries indefinitely at this frequency once the cap is reached.
+   * When playback recovers and stays healthy for ~30 seconds, the backoff resets to 2s.
+   *
+   * Default `30000` (30 seconds). Set to `0` to disable auto-recovery entirely (errors will
+   * only fire `onError` without retrying).
+   */
+  maxRetryIntervalMs?: number;
+  /**
+   * Called on each auto-recovery attempt so the consumer can show "reconnecting…" UI.
+   * `attempt` is the 1-based consecutive failure count (resets after sustained healthy playback).
+   */
+  onRecoveryAttempt?: (attempt: number, error: Error) => void;
   /** Extra props passed to the underlying `<video>` element. */
   videoProps?: VideoHTMLAttributes<HTMLVideoElement>;
   className?: string;

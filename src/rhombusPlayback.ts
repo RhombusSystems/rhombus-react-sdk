@@ -1,6 +1,7 @@
 import {
   MediaPlayer,
   type ErrorEvent as DashJSErrorEvent,
+  type MediaPlayerErrorEvent,
   type MediaPlayerClass,
 } from "dashjs";
 import { getDefaultRhombusDashSettings, getDefaultRhombusVodDashSettings } from "./dashSettings.js";
@@ -98,6 +99,60 @@ export function getFederatedTokenRefreshDelayMs(args: {
 export const DEFAULT_RHOMBUS_API_BASE_URL = "https://api2.rhombussystems.com/api";
 
 const LOG_PREFIX = "[RhombusBufferedPlayer]";
+
+const RECOVERABLE_ERROR_CODES = new Set([
+  10,  // MANIFEST_LOADER_PARSING_FAILURE_ERROR_CODE
+  11,  // MANIFEST_LOADER_LOADING_FAILURE_ERROR_CODE
+  12,  // XLINK_LOADER_LOADING_FAILURE_ERROR_CODE
+  15,  // SEGMENT_BASE_LOADER_ERROR_CODE
+  16,  // TIME_SYNC_FAILED_ERROR_CODE
+  17,  // FRAGMENT_LOADER_LOADING_FAILURE_ERROR_CODE
+  19,  // URL_RESOLUTION_FAILED_GENERIC_ERROR_CODE
+  25,  // DOWNLOAD_ERROR_ID_MANIFEST_CODE
+  26,  // DOWNLOAD_ERROR_ID_SIDX_CODE
+  27,  // DOWNLOAD_ERROR_ID_CONTENT_CODE
+  28,  // DOWNLOAD_ERROR_ID_INITIALIZATION_CODE
+  29,  // DOWNLOAD_ERROR_ID_XLINK_CODE
+  31,  // MANIFEST_ERROR_ID_PARSE_CODE
+  32,  // MANIFEST_ERROR_ID_NOSTREAMS_CODE
+]);
+
+function isMediaPlayerErrorEvent(e: DashJSErrorEvent): e is MediaPlayerErrorEvent {
+  return (
+    "error" in e &&
+    e.error != null &&
+    typeof e.error === "object" &&
+    "code" in e.error
+  );
+}
+
+/**
+ * Returns `true` when the dash.js error is a network / manifest / download failure
+ * that can be recovered by tearing down the player and recreating it.
+ * DRM, codec, and MSE capability errors are considered non-recoverable.
+ */
+export function isRecoverableDashError(e: DashJSErrorEvent): boolean {
+  if (isMediaPlayerErrorEvent(e)) {
+    return RECOVERABLE_ERROR_CODES.has(e.error.code);
+  }
+  const errorField = (e as { error?: unknown }).error;
+  if (typeof errorField === "string") {
+    return errorField === "download" || errorField === "manifestError";
+  }
+  return false;
+}
+
+/** Extract a human-readable message from any dash.js ErrorEvent variant. */
+export function getDashErrorMessage(e: DashJSErrorEvent): string {
+  if (isMediaPlayerErrorEvent(e)) {
+    return e.error.message || `Dash.js error (code ${e.error.code})`;
+  }
+  const payload = "error" in e ? e.error : undefined;
+  if (payload != null && typeof payload === "object" && "message" in payload) {
+    return String((payload as { message?: unknown }).message);
+  }
+  return `Dash.js error (${e.type})`;
+}
 
 export function getBrowserOrigin(): string {
   if (

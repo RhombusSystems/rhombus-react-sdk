@@ -1,5 +1,9 @@
 import { useEffect, useRef } from "react";
-import type { ErrorEvent as DashJSErrorEvent, MediaPlayerClass } from "dashjs";
+import {
+  MediaPlayer,
+  type ErrorEvent as DashJSErrorEvent,
+  type MediaPlayerClass,
+} from "dashjs";
 import type { FederatedTokenFetchResult, RhombusDashPlayerCallbacks } from "./rhombusPlayback.js";
 import {
   createRhombusDashPlayer,
@@ -12,7 +16,9 @@ import {
   fetchVodMpdUriDirect,
   fetchVodMpdUriViaOverride,
   getBrowserOrigin,
+  getDashErrorMessage,
   getFederatedTokenRefreshDelayMs,
+  isRecoverableDashError,
   mergeRequestHeaders,
 } from "./rhombusPlayback.js";
 import type { RhombusBufferedStreamQuality, RhombusBufferedPlayerProps } from "./types.js";
@@ -23,6 +29,10 @@ const DEFAULT_MEDIA_PATH_OVERRIDE = "/api/media-uris";
 const DEFAULT_MEDIA_PATH_DIRECT = "/camera/getMediaUris";
 
 const DEFAULT_VOD_DURATION_SEC = 7200;
+
+const DEFAULT_MAX_RETRY_INTERVAL_MS = 30_000;
+const INITIAL_RECOVERY_DELAY_MS = 2_000;
+const HEALTHY_PLAYBACK_RESET_MS = 30_000;
 
 export function RhombusBufferedPlayer({
   cameraUuid,
@@ -37,6 +47,8 @@ export function RhombusBufferedPlayer({
   startTimeSec,
   vodDurationSec = DEFAULT_VOD_DURATION_SEC,
   seekOffsetSec = 0,
+  maxRetryIntervalMs = DEFAULT_MAX_RETRY_INTERVAL_MS,
+  onRecoveryAttempt,
   videoProps,
   className,
   style,
@@ -49,8 +61,17 @@ export function RhombusBufferedPlayer({
   const playerRef = useRef<MediaPlayerClass | null>(null);
   const onReadyRef = useRef(onReady);
   const onErrorRef = useRef(onError);
+  const onRecoveryAttemptRef = useRef(onRecoveryAttempt);
   const headersRef = useRef(headers);
   const getRequestHeadersRef = useRef(getRequestHeaders);
+
+  const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const recoveryAttemptRef = useRef(0);
+  const recoveryDelayRef = useRef(INITIAL_RECOVERY_DELAY_MS);
+  const maxRetryIntervalMsRef = useRef(maxRetryIntervalMs);
+  maxRetryIntervalMsRef.current = maxRetryIntervalMs;
+
+  const healthyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const bufferedQRef = useRef<RhombusBufferedStreamQuality>("HIGH");
   const applyBQRef = useRef(true);
@@ -74,6 +95,7 @@ export function RhombusBufferedPlayer({
 
   onReadyRef.current = onReady;
   onErrorRef.current = onError;
+  onRecoveryAttemptRef.current = onRecoveryAttempt;
   headersRef.current = headers;
   getRequestHeadersRef.current = getRequestHeaders;
 
@@ -108,6 +130,25 @@ export function RhombusBufferedPlayer({
     }
   }
 
+  function clearRecoveryTimer() {
+    if (recoveryTimerRef.current != null) {
+      clearTimeout(recoveryTimerRef.current);
+      recoveryTimerRef.current = null;
+    }
+  }
+
+  function clearHealthyTimer() {
+    if (healthyTimerRef.current != null) {
+      clearTimeout(healthyTimerRef.current);
+      healthyTimerRef.current = null;
+    }
+  }
+
+  function resetRecoveryBackoff() {
+    recoveryAttemptRef.current = 0;
+    recoveryDelayRef.current = INITIAL_RECOVERY_DELAY_MS;
+  }
+
   useEffect(() => {
     if (federatedSessionToken === undefined) return;
     if (typeof federatedSessionToken === "string" && federatedSessionToken) {
@@ -121,14 +162,174 @@ export function RhombusBufferedPlayer({
 
     let effectCancelled = false;
     let player: MediaPlayerClass | null = null;
+    let handleDashError: (e: DashJSErrorEvent) => void;
+    let handleBufferLoaded: () => void;
 
-    const handleDashError = (e: DashJSErrorEvent) => {
-      const payload = "error" in e ? e.error : undefined;
-      const message =
-        payload != null && typeof payload === "object" && "message" in payload
-          ? String((payload as { message?: unknown }).message)
-          : `Dash.js error (${e.type})`;
-      onErrorRef.current?.(new Error(message));
+    const autoRecoveryEnabled = maxRetryIntervalMs > 0;
+
+    function startHealthyPlaybackTimer() {
+      clearHealthyTimer();
+      healthyTimerRef.current = setTimeout(() => {
+        if (!effectCancelled) {
+          resetRecoveryBackoff();
+        }
+      }, HEALTHY_PLAYBACK_RESET_MS);
+    }
+
+    async function buildPlayer(): Promise<MediaPlayerClass | null> {
+      const requestHeaders = await mergeRequestHeaders(
+        headersRef.current,
+        getRequestHeadersRef.current
+      );
+
+      let initialTokenResult: FederatedTokenFetchResult | null = null;
+      if (sdkManagedFederatedToken) {
+        const tokenUrl = useDirectRhombusApi
+          ? joinUrl(getBrowserOrigin(), federatedPath)
+          : joinUrl(overrideBase!, federatedPath);
+        initialTokenResult = await fetchFederatedSessionToken(
+          tokenUrl,
+          requestHeaders,
+          durationSecRef.current,
+          usedDefaultFederatedPath
+        );
+        if (effectCancelled) return null;
+        tokenRef.current = initialTokenResult.federatedSessionToken;
+      } else {
+        if (!federatedSessionToken) {
+          throw new Error("federatedSessionToken must be a non-empty string");
+        }
+        tokenRef.current = federatedSessionToken;
+      }
+
+      let manifestUri: string;
+      if (isVod) {
+        if (useDirectRhombusApi) {
+          manifestUri = await fetchVodMpdUriDirect(
+            resolvedRhombusBase,
+            mediaPath,
+            tokenRef.current,
+            cameraUuid,
+            effectiveConnectionMode,
+            startTimeSec,
+            vodDurationSec
+          );
+        } else {
+          manifestUri = await fetchVodMpdUriViaOverride(
+            joinUrl(overrideBase!, mediaPath),
+            requestHeaders,
+            cameraUuid,
+            usedDefaultMediaPath,
+            effectiveConnectionMode,
+            startTimeSec,
+            vodDurationSec
+          );
+        }
+      } else {
+        if (useDirectRhombusApi) {
+          manifestUri = await fetchLiveMpdUriDirect(
+            resolvedRhombusBase,
+            mediaPath,
+            tokenRef.current,
+            cameraUuid,
+            effectiveConnectionMode
+          );
+        } else {
+          manifestUri = await fetchLiveMpdUriViaOverride(
+            joinUrl(overrideBase!, mediaPath),
+            requestHeaders,
+            cameraUuid,
+            usedDefaultMediaPath,
+            effectiveConnectionMode
+          );
+        }
+      }
+
+      if (effectCancelled) return null;
+
+      const el = videoRef.current;
+      if (!el) return null;
+
+      const newPlayer = isVod
+        ? createRhombusVodDashPlayer(
+            el,
+            manifestUri,
+            seekOffsetSec,
+            handleDashError,
+            dashPlayerCallbacksRef.current!
+          )
+        : createRhombusDashPlayer(
+            el,
+            manifestUri,
+            handleDashError,
+            dashPlayerCallbacksRef.current!
+          );
+
+      newPlayer.on(MediaPlayer.events.BUFFER_LOADED, handleBufferLoaded, undefined);
+
+      if (sdkManagedFederatedToken && initialTokenResult !== null) {
+        scheduleSdkTokenRefresh(initialTokenResult, Date.now(), durationSecRef.current);
+      }
+
+      return newPlayer;
+    }
+
+    function scheduleRecovery() {
+      clearRecoveryTimer();
+      const delay = recoveryDelayRef.current;
+      recoveryDelayRef.current = Math.min(
+        delay * 2,
+        maxRetryIntervalMsRef.current
+      );
+
+      recoveryTimerRef.current = setTimeout(() => {
+        if (effectCancelled) return;
+        void (async () => {
+          try {
+            if (player) {
+              player.off(MediaPlayer.events.BUFFER_LOADED, handleBufferLoaded, undefined);
+              destroyRhombusDashPlayer(player, handleDashError);
+              player = null;
+              playerRef.current = null;
+            }
+
+            const newPlayer = await buildPlayer();
+            if (effectCancelled || !newPlayer) return;
+
+            player = newPlayer;
+            playerRef.current = newPlayer;
+            onReadyRef.current?.();
+          } catch (e: unknown) {
+            if (effectCancelled) return;
+            const err = e instanceof Error ? e : new Error(String(e));
+            onErrorRef.current?.(err);
+            if (autoRecoveryEnabled) {
+              recoveryAttemptRef.current++;
+              onRecoveryAttemptRef.current?.(recoveryAttemptRef.current, err);
+              scheduleRecovery();
+            }
+          }
+        })();
+      }, delay);
+    }
+
+    handleDashError = (e: DashJSErrorEvent) => {
+      const message = getDashErrorMessage(e);
+      const error = new Error(message);
+      onErrorRef.current?.(error);
+
+      if (autoRecoveryEnabled && isRecoverableDashError(e)) {
+        clearHealthyTimer();
+        recoveryAttemptRef.current++;
+        onRecoveryAttemptRef.current?.(recoveryAttemptRef.current, error);
+        scheduleRecovery();
+      }
+    };
+
+    handleBufferLoaded = () => {
+      if (recoveryAttemptRef.current > 0) {
+        startHealthyPlaybackTimer();
+      }
     };
 
     const scheduleSdkTokenRefresh = (
@@ -176,111 +377,31 @@ export function RhombusBufferedPlayer({
 
     (async () => {
       try {
-        const requestHeaders = await mergeRequestHeaders(
-          headersRef.current,
-          getRequestHeadersRef.current
-        );
-
-        let initialTokenResult: FederatedTokenFetchResult | null = null;
-        if (sdkManagedFederatedToken) {
-          const tokenUrl = useDirectRhombusApi
-            ? joinUrl(getBrowserOrigin(), federatedPath)
-            : joinUrl(overrideBase!, federatedPath);
-          initialTokenResult = await fetchFederatedSessionToken(
-            tokenUrl,
-            requestHeaders,
-            durationSecRef.current,
-            usedDefaultFederatedPath
-          );
-          if (effectCancelled) return;
-          tokenRef.current = initialTokenResult.federatedSessionToken;
-        } else {
-          if (!federatedSessionToken) {
-            throw new Error("federatedSessionToken must be a non-empty string");
-          }
-          tokenRef.current = federatedSessionToken;
-        }
-
-        let manifestUri: string;
-        if (isVod) {
-          if (useDirectRhombusApi) {
-            manifestUri = await fetchVodMpdUriDirect(
-              resolvedRhombusBase,
-              mediaPath,
-              tokenRef.current,
-              cameraUuid,
-              effectiveConnectionMode,
-              startTimeSec,
-              vodDurationSec
-            );
-          } else {
-            manifestUri = await fetchVodMpdUriViaOverride(
-              joinUrl(overrideBase!, mediaPath),
-              requestHeaders,
-              cameraUuid,
-              usedDefaultMediaPath,
-              effectiveConnectionMode,
-              startTimeSec,
-              vodDurationSec
-            );
-          }
-        } else {
-          if (useDirectRhombusApi) {
-            manifestUri = await fetchLiveMpdUriDirect(
-              resolvedRhombusBase,
-              mediaPath,
-              tokenRef.current,
-              cameraUuid,
-              effectiveConnectionMode
-            );
-          } else {
-            manifestUri = await fetchLiveMpdUriViaOverride(
-              joinUrl(overrideBase!, mediaPath),
-              requestHeaders,
-              cameraUuid,
-              usedDefaultMediaPath,
-              effectiveConnectionMode
-            );
-          }
-        }
-
-        if (effectCancelled) return;
-
-        const el = videoRef.current;
-        if (!el) return;
-
-        player = isVod
-          ? createRhombusVodDashPlayer(
-              el,
-              manifestUri,
-              seekOffsetSec,
-              handleDashError,
-              dashPlayerCallbacksRef.current!
-            )
-          : createRhombusDashPlayer(
-              el,
-              manifestUri,
-              handleDashError,
-              dashPlayerCallbacksRef.current!
-            );
+        player = await buildPlayer();
+        if (effectCancelled || !player) return;
         playerRef.current = player;
-
-        if (sdkManagedFederatedToken && initialTokenResult !== null) {
-          scheduleSdkTokenRefresh(initialTokenResult, Date.now(), durationSecRef.current);
-        }
-
+        resetRecoveryBackoff();
         onReadyRef.current?.();
       } catch (e: unknown) {
         const err = e instanceof Error ? e : new Error(String(e));
         onErrorRef.current?.(err);
+        if (autoRecoveryEnabled) {
+          recoveryAttemptRef.current++;
+          onRecoveryAttemptRef.current?.(recoveryAttemptRef.current, err);
+          scheduleRecovery();
+        }
       }
     })();
 
     return () => {
       effectCancelled = true;
       clearSdkRefreshTimer();
+      clearRecoveryTimer();
+      clearHealthyTimer();
+      resetRecoveryBackoff();
       scheduleSdkTokenRefreshRef.current = () => {};
       if (player) {
+        player.off(MediaPlayer.events.BUFFER_LOADED, handleBufferLoaded, undefined);
         destroyRhombusDashPlayer(player, handleDashError);
       }
       playerRef.current = null;
@@ -300,6 +421,7 @@ export function RhombusBufferedPlayer({
     startTimeSec,
     vodDurationSec,
     seekOffsetSec,
+    maxRetryIntervalMs,
   ]);
 
   useEffect(() => {
