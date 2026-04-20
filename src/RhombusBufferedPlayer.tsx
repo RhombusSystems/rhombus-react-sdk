@@ -34,6 +34,11 @@ const DEFAULT_MAX_RETRY_INTERVAL_MS = 30_000;
 const INITIAL_RECOVERY_DELAY_MS = 2_000;
 const HEALTHY_PLAYBACK_RESET_MS = 30_000;
 
+const DEFAULT_STALL_TIMEOUT_MS = 12_000;
+const STALL_CHECK_INTERVAL_MS = 1_000;
+/** `<video>.currentTime` movement smaller than this between samples is treated as "no progress". */
+const STALL_PROGRESS_EPSILON_SEC = 0.05;
+
 export function RhombusBufferedPlayer({
   cameraUuid,
   connectionMode,
@@ -48,6 +53,7 @@ export function RhombusBufferedPlayer({
   vodDurationSec = DEFAULT_VOD_DURATION_SEC,
   seekOffsetSec = 0,
   maxRetryIntervalMs = DEFAULT_MAX_RETRY_INTERVAL_MS,
+  stallTimeoutMs = DEFAULT_STALL_TIMEOUT_MS,
   onRecoveryAttempt,
   videoProps,
   className,
@@ -72,6 +78,13 @@ export function RhombusBufferedPlayer({
   maxRetryIntervalMsRef.current = maxRetryIntervalMs;
 
   const healthyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const stallTimeoutMsRef = useRef(stallTimeoutMs);
+  stallTimeoutMsRef.current = stallTimeoutMs;
+  const stallCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stallBufferLoadedRef = useRef(false);
+  const stallLastProgressAtMsRef = useRef(0);
+  const stallLastCurrentTimeRef = useRef(0);
 
   const bufferedQRef = useRef<RhombusBufferedStreamQuality>("HIGH");
   const applyBQRef = useRef(true);
@@ -142,6 +155,14 @@ export function RhombusBufferedPlayer({
       clearTimeout(healthyTimerRef.current);
       healthyTimerRef.current = null;
     }
+  }
+
+  function clearStallChecker() {
+    if (stallCheckIntervalRef.current != null) {
+      clearInterval(stallCheckIntervalRef.current);
+      stallCheckIntervalRef.current = null;
+    }
+    stallBufferLoadedRef.current = false;
   }
 
   function resetRecoveryBackoff() {
@@ -276,6 +297,7 @@ export function RhombusBufferedPlayer({
 
     function scheduleRecovery() {
       clearRecoveryTimer();
+      clearStallChecker();
       const delay = recoveryDelayRef.current;
       recoveryDelayRef.current = Math.min(
         delay * 2,
@@ -299,6 +321,7 @@ export function RhombusBufferedPlayer({
             player = newPlayer;
             playerRef.current = newPlayer;
             onReadyRef.current?.();
+            startStallChecker();
           } catch (e: unknown) {
             if (effectCancelled) return;
             const err = e instanceof Error ? e : new Error(String(e));
@@ -311,6 +334,51 @@ export function RhombusBufferedPlayer({
           }
         })();
       }, delay);
+    }
+
+    function startStallChecker() {
+      clearStallChecker();
+      if (!autoRecoveryEnabled) return;
+      if (stallTimeoutMsRef.current <= 0) return;
+
+      stallBufferLoadedRef.current = false;
+      stallLastProgressAtMsRef.current = Date.now();
+      stallLastCurrentTimeRef.current = videoRef.current?.currentTime ?? 0;
+
+      stallCheckIntervalRef.current = setInterval(() => {
+        if (effectCancelled) return;
+        const timeoutMs = stallTimeoutMsRef.current;
+        if (timeoutMs <= 0) return;
+        const vid = videoRef.current;
+        if (!vid) return;
+
+        // Treat user-initiated pause/seek/end as healthy (especially for VOD).
+        if (vid.paused || vid.ended || vid.seeking) {
+          stallLastProgressAtMsRef.current = Date.now();
+          stallLastCurrentTimeRef.current = vid.currentTime;
+          return;
+        }
+
+        // Steady-state: did `<video>.currentTime` advance since last sample?
+        if (stallBufferLoadedRef.current) {
+          if (vid.currentTime > stallLastCurrentTimeRef.current + STALL_PROGRESS_EPSILON_SEC) {
+            stallLastCurrentTimeRef.current = vid.currentTime;
+            stallLastProgressAtMsRef.current = Date.now();
+            return;
+          }
+        }
+
+        if (Date.now() - stallLastProgressAtMsRef.current > timeoutMs) {
+          const phase = stallBufferLoadedRef.current ? "playback" : "initial buffer";
+          const error = new Error(
+            `Dash.js ${phase} stalled for ${timeoutMs}ms; recreating player`
+          );
+          onErrorRef.current?.(error);
+          recoveryAttemptRef.current++;
+          onRecoveryAttemptRef.current?.(recoveryAttemptRef.current, error);
+          scheduleRecovery();
+        }
+      }, STALL_CHECK_INTERVAL_MS);
     }
 
     handleDashError = (e: DashJSErrorEvent) => {
@@ -327,6 +395,9 @@ export function RhombusBufferedPlayer({
     };
 
     handleBufferLoaded = () => {
+      stallBufferLoadedRef.current = true;
+      stallLastProgressAtMsRef.current = Date.now();
+      stallLastCurrentTimeRef.current = videoRef.current?.currentTime ?? 0;
       if (recoveryAttemptRef.current > 0) {
         startHealthyPlaybackTimer();
       }
@@ -382,6 +453,7 @@ export function RhombusBufferedPlayer({
         playerRef.current = player;
         resetRecoveryBackoff();
         onReadyRef.current?.();
+        startStallChecker();
       } catch (e: unknown) {
         const err = e instanceof Error ? e : new Error(String(e));
         onErrorRef.current?.(err);
@@ -398,6 +470,7 @@ export function RhombusBufferedPlayer({
       clearSdkRefreshTimer();
       clearRecoveryTimer();
       clearHealthyTimer();
+      clearStallChecker();
       resetRecoveryBackoff();
       scheduleSdkTokenRefreshRef.current = () => {};
       if (player) {

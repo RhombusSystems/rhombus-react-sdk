@@ -213,6 +213,9 @@ Shared and **RhombusBufferedPlayer**-specific:
 | `seekOffsetSec` | **RhombusBufferedPlayer** only. Playback start offset from `startTimeSec` in seconds. Default `0`. Only used when `startTimeSec` is set. |
 | `bufferedStreamQuality` | **RhombusBufferedPlayer** only. `HIGH` \| `MEDIUM` \| `LOW`. Server downscale via `_ds` on DASH requests (WAN and LAN). Default `HIGH`. Updating does not re-fetch the manifest. |
 | `applyBufferedStreamQuality` | **RhombusBufferedPlayer** only. Default `true`. If `false`, `_ds` is not appended. |
+| `maxRetryIntervalMs` | **RhombusBufferedPlayer** only. Ceiling for the auto-recovery retry interval. Default `30000`. Set to `0` to disable. See [Auto-recovery](#auto-recovery--reconnect). |
+| `stallTimeoutMs` | **RhombusBufferedPlayer** only. Stall watchdog timeout in ms. Default `12000`. Set to `0` to disable. See [Auto-recovery](#auto-recovery--reconnect). |
+| `onRecoveryAttempt` | **RhombusBufferedPlayer** only. Called on each retry: `(attempt, error) => void`. Use to render a "reconnecting…" overlay. |
 
 **RhombusRealtimePlayer** also accepts everything above that applies to token/media resolution, plus:
 
@@ -220,6 +223,26 @@ Shared and **RhombusBufferedPlayer**-specific:
 |------|------|
 | `connectionMode` | `"wan"` or `"lan"` — which `getMediaUris` H.264 URI field to use; both append federated auth query params on the WebSocket. |
 | `realtimeStreamQuality` | `HD` \| `SD`. Default `HD`. `SD` uses `/wsl` instead of `/ws`; changing this prop reconnects the WebSocket. |
+| `maxRetryIntervalMs` | Ceiling for the auto-reconnect retry interval. Default `30000`. Set to `0` to disable. See [Auto-recovery](#auto-recovery--reconnect). |
+| `stallTimeoutMs` | Stall watchdog timeout in ms (no decoded frame ⇒ reconnect). Default `12000`. Set to `0` to disable. See [Auto-recovery](#auto-recovery--reconnect). |
+| `onRecoveryAttempt` | Called on each reconnect: `(attempt, error) => void`. Use to render a "reconnecting…" overlay. |
+
+## Auto-recovery / reconnect
+
+Both players retry indefinitely with exponential backoff (2s → 4s → 8s → 16s → … capped at `maxRetryIntervalMs`, default 30s). Backoff resets to 2s after roughly 30 seconds of healthy playback. Pass `onRecoveryAttempt` to surface "reconnecting…" UI to the user.
+
+**`RhombusBufferedPlayer` (DASH)** rebuilds the dash.js player when:
+
+- A recoverable dash.js error fires (manifest load, segment download, etc.).
+- The initial buffer never loads within `stallTimeoutMs` after the manifest attaches.
+- `<video>.currentTime` stops advancing for `stallTimeoutMs` while not paused/seeking/ended (live or VOD).
+
+**`RhombusRealtimePlayer` (H.264 WebSocket)** tears down and reopens the socket when:
+
+- `WebSocket.onerror` or an unexpected `onclose` fires.
+- The socket fails to open within ~8 seconds.
+- No decoded frame arrives within `stallTimeoutMs` after the connection is established.
+- The Rhombus server issues a `reconnect` control message (kept on the existing 10s delay).
 
 Non-OK responses (e.g. **404** on the default token path) log **`[RhombusBufferedPlayer]`** hints in the console with the request URL and how to adjust `paths` / `apiOverrideBaseUrl`, while **`onError`** still receives a concise `Error`.
 

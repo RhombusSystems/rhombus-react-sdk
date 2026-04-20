@@ -1,13 +1,38 @@
 import { RhombusH264StreamParser } from "./stream/rhombusH264StreamParser.js";
 
 const RECONNECT_COMMAND_MS = 10_000;
-const CONNECT_POLL_MS = 5000;
+const DEFAULT_MAX_RETRY_INTERVAL_MS = 30_000;
+const INITIAL_RECONNECT_DELAY_MS = 2_000;
+const DEFAULT_STALL_TIMEOUT_MS = 12_000;
+const STALL_CHECK_INTERVAL_MS = 1_000;
+const HEALTHY_PLAYBACK_RESET_MS = 30_000;
+/** Max time to wait for `WebSocket.onopen` before treating the attempt as failed. */
+const CONNECT_TIMEOUT_MS = 8_000;
 
 export type RhombusRealtimeSessionOptions = {
   wsUrl: string;
   canvas: HTMLCanvasElement;
   onError: (error: Error) => void;
   onReady?: () => void;
+  /**
+   * Called before each auto-reconnect attempt (server-initiated reconnects, transport errors,
+   * or stall-detected reconnects). `attempt` is a 1-based counter that resets after sustained
+   * healthy playback (~30 s of decoded frames).
+   */
+  onRecoveryAttempt?: (attempt: number, error: Error) => void;
+  /**
+   * Ceiling for the reconnect backoff in milliseconds. Backoff doubles starting at 2 s
+   * (2 → 4 → 8 → 16 → … → cap). Default {@link DEFAULT_MAX_RETRY_INTERVAL_MS} (30 s).
+   * Set to `0` to disable auto-reconnect entirely.
+   */
+  maxRetryIntervalMs?: number;
+  /**
+   * Stall watchdog in milliseconds: if the WebSocket is open but no decoded video frame is
+   * produced within this window, the SDK closes the socket and reconnects. Most "WAN live
+   * black screen until refresh" cases are caught here. Default {@link DEFAULT_STALL_TIMEOUT_MS}
+   * (12 s). Set to `0` to disable the watchdog.
+   */
+  stallTimeoutMs?: number;
 };
 
 /**
@@ -15,8 +40,11 @@ export type RhombusRealtimeSessionOptions = {
  * Mirrors Rhombus console RealtimeWebsocket + RealtimeDecoder behavior in simplified form.
  */
 export function startRhombusRealtimeSession(options: RhombusRealtimeSessionOptions): () => void {
-  const { canvas, onError, onReady } = options;
+  const { canvas, onError, onReady, onRecoveryAttempt } = options;
   const wsUrl = options.wsUrl;
+  const maxRetryIntervalMs = options.maxRetryIntervalMs ?? DEFAULT_MAX_RETRY_INTERVAL_MS;
+  const stallTimeoutMs = options.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS;
+  const autoReconnectEnabled = maxRetryIntervalMs > 0;
 
   if (typeof VideoDecoder === "undefined") {
     onError(
@@ -29,8 +57,14 @@ export function startRhombusRealtimeSession(options: RhombusRealtimeSessionOptio
 
   let destroyed = false;
   let webSocket: WebSocket | null = null;
-  let connectPollId: ReturnType<typeof setInterval> | null = null;
   let reconnectTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  let connectTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  let stallIntervalId: ReturnType<typeof setInterval> | null = null;
+  let healthyTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  let reconnectAttempt = 0;
+  let reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
+  let lastFrameAtMs = 0;
 
   const streamParser = new RhombusH264StreamParser();
   let acceptDeltaFrame = false;
@@ -55,6 +89,8 @@ export function startRhombusRealtimeSession(options: RhombusRealtimeSessionOptio
         }
         ctx.drawImage(frame, 0, 0);
         frame.close();
+        lastFrameAtMs = Date.now();
+        scheduleHealthyReset();
       },
       error: e => {
         if (!destroyed) {
@@ -97,10 +133,31 @@ export function startRhombusRealtimeSession(options: RhombusRealtimeSessionOptio
     }
   };
 
-  const clearConnectPoll = () => {
-    if (connectPollId != null) {
-      clearInterval(connectPollId);
-      connectPollId = null;
+  const clearConnectTimeout = () => {
+    if (connectTimeoutId != null) {
+      clearTimeout(connectTimeoutId);
+      connectTimeoutId = null;
+    }
+  };
+
+  const clearReconnectTimeout = () => {
+    if (reconnectTimeoutId != null) {
+      clearTimeout(reconnectTimeoutId);
+      reconnectTimeoutId = null;
+    }
+  };
+
+  const clearStallChecker = () => {
+    if (stallIntervalId != null) {
+      clearInterval(stallIntervalId);
+      stallIntervalId = null;
+    }
+  };
+
+  const clearHealthyTimer = () => {
+    if (healthyTimeoutId != null) {
+      clearTimeout(healthyTimeoutId);
+      healthyTimeoutId = null;
     }
   };
 
@@ -120,11 +177,10 @@ export function startRhombusRealtimeSession(options: RhombusRealtimeSessionOptio
 
   const destroy = () => {
     destroyed = true;
-    clearConnectPoll();
-    if (reconnectTimeoutId != null) {
-      clearTimeout(reconnectTimeoutId);
-      reconnectTimeoutId = null;
-    }
+    clearConnectTimeout();
+    clearReconnectTimeout();
+    clearStallChecker();
+    clearHealthyTimer();
     closeWebSocket();
     try {
       if (decoder.state !== "closed") {
@@ -135,6 +191,58 @@ export function startRhombusRealtimeSession(options: RhombusRealtimeSessionOptio
     }
   };
 
+  function scheduleHealthyReset() {
+    if (reconnectAttempt === 0 && reconnectDelayMs === INITIAL_RECONNECT_DELAY_MS) return;
+    if (healthyTimeoutId != null) return;
+    healthyTimeoutId = setTimeout(() => {
+      healthyTimeoutId = null;
+      if (destroyed) return;
+      reconnectAttempt = 0;
+      reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
+    }, HEALTHY_PLAYBACK_RESET_MS);
+  }
+
+  function scheduleReconnect(error: Error) {
+    if (destroyed) return;
+    if (!autoReconnectEnabled) {
+      onError(error);
+      return;
+    }
+    if (reconnectTimeoutId != null) return;
+
+    clearConnectTimeout();
+    clearStallChecker();
+    clearHealthyTimer();
+    closeWebSocket();
+    acceptDeltaFrame = false;
+
+    const delay = reconnectDelayMs;
+    reconnectDelayMs = Math.min(delay * 2, maxRetryIntervalMs);
+    reconnectAttempt++;
+    onError(error);
+    onRecoveryAttempt?.(reconnectAttempt, error);
+
+    reconnectTimeoutId = setTimeout(() => {
+      reconnectTimeoutId = null;
+      if (!destroyed) createWebSocket();
+    }, delay);
+  }
+
+  function startStallChecker() {
+    clearStallChecker();
+    if (stallTimeoutMs <= 0) return;
+    lastFrameAtMs = Date.now();
+    stallIntervalId = setInterval(() => {
+      if (destroyed) return;
+      if (!webSocket || webSocket.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - lastFrameAtMs > stallTimeoutMs) {
+        scheduleReconnect(
+          new Error(`Realtime stream stalled for ${stallTimeoutMs}ms; reconnecting`)
+        );
+      }
+    }, STALL_CHECK_INTERVAL_MS);
+  }
+
   const handleTextCommand = (command: string) => {
     let cmd: { action?: string; width?: number; height?: number; framerate?: number };
     try {
@@ -143,12 +251,16 @@ export function startRhombusRealtimeSession(options: RhombusRealtimeSessionOptio
       return;
     }
     if (cmd.action === "reconnect") {
+      // Server-initiated graceful reconnect: not a failure, so don't bump backoff.
+      clearStallChecker();
+      clearHealthyTimer();
+      clearConnectTimeout();
       closeWebSocket();
+      acceptDeltaFrame = false;
+      clearReconnectTimeout();
       reconnectTimeoutId = setTimeout(() => {
         reconnectTimeoutId = null;
-        if (!destroyed) {
-          createWebSocket();
-        }
+        if (!destroyed) createWebSocket();
       }, RECONNECT_COMMAND_MS);
       return;
     }
@@ -158,13 +270,15 @@ export function startRhombusRealtimeSession(options: RhombusRealtimeSessionOptio
     }
   };
 
-  let wsErrorReported = false;
+  let firstReadyFired = false;
 
   const createWebSocket = () => {
     if (destroyed) return;
 
-    clearConnectPoll();
+    clearConnectTimeout();
+    clearStallChecker();
     closeWebSocket();
+    acceptDeltaFrame = false;
 
     let connected = false;
     const socket = new WebSocket(wsUrl);
@@ -172,13 +286,18 @@ export function startRhombusRealtimeSession(options: RhombusRealtimeSessionOptio
     socket.binaryType = "arraybuffer";
 
     socket.onopen = () => {
+      if (destroyed || webSocket !== socket) return;
       connected = true;
-      clearConnectPoll();
-      onReady?.();
+      clearConnectTimeout();
+      startStallChecker();
+      if (!firstReadyFired) {
+        firstReadyFired = true;
+        onReady?.();
+      }
     };
 
     socket.onmessage = (event: MessageEvent) => {
-      if (destroyed) return;
+      if (destroyed || webSocket !== socket) return;
       if (typeof event.data === "string") {
         handleTextCommand(event.data);
         return;
@@ -187,28 +306,33 @@ export function startRhombusRealtimeSession(options: RhombusRealtimeSessionOptio
     };
 
     socket.onerror = () => {
-      if (!destroyed && !connected && !wsErrorReported) {
-        wsErrorReported = true;
-        onError(new Error("WebSocket connection error"));
+      if (destroyed || webSocket !== socket) return;
+      // Some browsers fire onerror without onclose; only act on the post-connect case here
+      // (pre-connect failures are caught by onclose / connect timeout below).
+      if (connected) {
+        scheduleReconnect(new Error("Realtime WebSocket transport error"));
       }
     };
 
-    socket.onclose = () => {
-      connected = false;
+    socket.onclose = (event: CloseEvent) => {
+      if (destroyed || webSocket !== socket) return;
+      const reason = event.reason ? `: ${event.reason}` : "";
+      scheduleReconnect(
+        new Error(
+          `Realtime WebSocket closed (code ${event.code}${reason})`
+        )
+      );
     };
 
-    connectPollId = setInterval(() => {
-      if (destroyed) {
-        clearConnectPoll();
-        return;
+    connectTimeoutId = setTimeout(() => {
+      connectTimeoutId = null;
+      if (destroyed || webSocket !== socket) return;
+      if (!connected) {
+        scheduleReconnect(
+          new Error(`Realtime WebSocket did not open within ${CONNECT_TIMEOUT_MS}ms`)
+        );
       }
-      if (!connected && webSocket === socket) {
-        closeWebSocket();
-        createWebSocket();
-      } else {
-        clearConnectPoll();
-      }
-    }, CONNECT_POLL_MS);
+    }, CONNECT_TIMEOUT_MS);
   };
 
   createWebSocket();

@@ -16,6 +16,9 @@ const DEFAULT_FEDERATED_PATH = "/api/federated-token";
 const DEFAULT_MEDIA_PATH_OVERRIDE = "/api/media-uris";
 const DEFAULT_MEDIA_PATH_DIRECT = "/camera/getMediaUris";
 
+const DEFAULT_REALTIME_MAX_RETRY_INTERVAL_MS = 30_000;
+const DEFAULT_REALTIME_STALL_TIMEOUT_MS = 12_000;
+
 export function RhombusRealtimePlayer({
   cameraUuid,
   connectionMode,
@@ -27,6 +30,9 @@ export function RhombusRealtimePlayer({
   realtimeStreamQuality = "HD",
   headers,
   getRequestHeaders,
+  maxRetryIntervalMs = DEFAULT_REALTIME_MAX_RETRY_INTERVAL_MS,
+  stallTimeoutMs = DEFAULT_REALTIME_STALL_TIMEOUT_MS,
+  onRecoveryAttempt,
   canvasProps,
   className,
   style,
@@ -36,8 +42,13 @@ export function RhombusRealtimePlayer({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const onReadyRef = useRef(onReady);
   const onErrorRef = useRef(onError);
+  const onRecoveryAttemptRef = useRef(onRecoveryAttempt);
   const headersRef = useRef(headers);
   const getRequestHeadersRef = useRef(getRequestHeaders);
+  const maxRetryIntervalMsRef = useRef(maxRetryIntervalMs);
+  const stallTimeoutMsRef = useRef(stallTimeoutMs);
+  maxRetryIntervalMsRef.current = maxRetryIntervalMs;
+  stallTimeoutMsRef.current = stallTimeoutMs;
 
   const tokenRef = useRef("");
   const durationSecRef = useRef(tokenDurationSec);
@@ -53,6 +64,7 @@ export function RhombusRealtimePlayer({
 
   onReadyRef.current = onReady;
   onErrorRef.current = onError;
+  onRecoveryAttemptRef.current = onRecoveryAttempt;
   headersRef.current = headers;
   getRequestHeadersRef.current = getRequestHeaders;
 
@@ -129,6 +141,11 @@ export function RhombusRealtimePlayer({
               onReadyRef.current?.();
             }
           },
+          onRecoveryAttempt: (attempt, err) => {
+            onRecoveryAttemptRef.current?.(attempt, err);
+          },
+          maxRetryIntervalMs: maxRetryIntervalMsRef.current,
+          stallTimeoutMs: stallTimeoutMsRef.current,
         });
       } catch (e: unknown) {
         const err = e instanceof Error ? e : new Error(String(e));
@@ -216,6 +233,11 @@ export function RhombusRealtimePlayer({
                   onReadyRef.current?.();
                 }
               },
+              onRecoveryAttempt: (attempt, err) => {
+                onRecoveryAttemptRef.current?.(attempt, err);
+              },
+              maxRetryIntervalMs: maxRetryIntervalMsRef.current,
+              stallTimeoutMs: stallTimeoutMsRef.current,
             });
             const at = Date.now();
             const durUsed = durationSecRef.current;
@@ -288,6 +310,11 @@ export function RhombusRealtimePlayer({
             realtimeReadyFiredRef.current = true;
             onReadyRef.current?.();
           },
+          onRecoveryAttempt: (attempt, err) => {
+            onRecoveryAttemptRef.current?.(attempt, err);
+          },
+          maxRetryIntervalMs: maxRetryIntervalMsRef.current,
+          stallTimeoutMs: stallTimeoutMsRef.current,
         });
 
         if (sdkManagedFederatedToken && initialTokenResult !== null) {
@@ -371,6 +398,11 @@ export function RhombusRealtimePlayer({
               onReadyRef.current?.();
             }
           },
+          onRecoveryAttempt: (attempt, err) => {
+            onRecoveryAttemptRef.current?.(attempt, err);
+          },
+          maxRetryIntervalMs: maxRetryIntervalMsRef.current,
+          stallTimeoutMs: stallTimeoutMsRef.current,
         });
         scheduleSdkTokenRefreshRef.current(next, Date.now(), tokenDurationSec);
       } catch (e: unknown) {

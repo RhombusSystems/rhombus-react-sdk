@@ -121,6 +121,18 @@ export type RhombusBufferedPlayerProps = {
    */
   maxRetryIntervalMs?: number;
   /**
+   * Stall watchdog timeout in milliseconds. The SDK polls `<video>.currentTime` once per
+   * second; if no progress is observed for this duration (and the stream is not paused/seeking),
+   * the dash.js instance is destroyed and rebuilt. This catches silent failures that don't
+   * raise a recoverable dash.js error (network drops mid-segment, decoder hang, etc.).
+   *
+   * Also covers the **initial buffer** case: if `BUFFER_LOADED` doesn't fire within this
+   * window after the manifest loads, the player is rebuilt.
+   *
+   * Default `12000` (12 seconds). Set to `0` to disable the watchdog.
+   */
+  stallTimeoutMs?: number;
+  /**
    * Called on each auto-recovery attempt so the consumer can show "reconnecting…" UI.
    * `attempt` is the 1-based consecutive failure count (resets after sustained healthy playback).
    */
@@ -163,6 +175,31 @@ export type RhombusRealtimePlayerProps = {
    * Changing this reconnects the WebSocket. Default `HD`.
    */
   realtimeStreamQuality?: RhombusRealtimeStreamQuality;
+  /**
+   * Ceiling for the auto-reconnect retry interval in milliseconds. When the WebSocket
+   * disconnects, errors, or stalls (no decoded frames within `stallTimeoutMs`), the SDK
+   * tears down the session and reconnects with exponential backoff: 2s → 4s → 8s → 16s
+   * → … up to this cap. The SDK **never gives up** — it retries indefinitely once the
+   * cap is reached. After ~30 seconds of healthy decoded frames, the backoff resets to 2s.
+   *
+   * Default `30000` (30 seconds). Set to `0` to disable auto-reconnect.
+   */
+  maxRetryIntervalMs?: number;
+  /**
+   * Stall watchdog timeout in milliseconds. After the WebSocket connects, the SDK
+   * monitors the `VideoDecoder` output callback; if no decoded frame is observed for
+   * this duration the session is treated as stalled and a reconnect is scheduled.
+   * Catches silent failures: dropped TCP connections that the OS hasn't surfaced yet,
+   * upstream encoder hangs, decoder errors after a partial NAL unit, etc.
+   *
+   * Default `12000` (12 seconds). Set to `0` to disable the watchdog.
+   */
+  stallTimeoutMs?: number;
+  /**
+   * Called on each auto-reconnect attempt so the consumer can show "reconnecting…" UI.
+   * `attempt` is the 1-based consecutive failure count (resets after sustained healthy frames).
+   */
+  onRecoveryAttempt?: (attempt: number, error: Error) => void;
   canvasProps?: CanvasHTMLAttributes<HTMLCanvasElement>;
   className?: string;
   style?: CSSProperties;
