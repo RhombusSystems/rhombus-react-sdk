@@ -17,30 +17,49 @@ const SPEEDS = [0.5, 1, 2, 4];
  * CSS targeting the `rhombus-player-*` classes overrides these defaults with no `!important` and
  * regardless of stylesheet load order. Dynamic states use `:disabled` / `[data-active]` /
  * `[data-disabled]` so they are overridable too.
+ *
+ * Layout mirrors the Rhombus Console camera-detail toolbar: a 3-column grid (`1fr auto 1fr`)
+ * with view tools on the left, a centered transport cluster (rewind · play/pause · speed), and
+ * time + Go-Live/LIVE + live-type on the right. The toolbar renders ABOVE the timeline (Console
+ * order: transport bar, then scrubber).
  */
 const STYLE_ID = "rhombus-player-controls-styles";
 const CONTROLS_CSS = `
-:where(.rhombus-player-controls){display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 8px;background:#111;color:#eee;font:13px system-ui,sans-serif;}
-:where(.rhombus-player-btn){cursor:pointer;border:1px solid #444;background:#1e1e1e;color:#eee;border-radius:4px;padding:4px 8px;font:inherit;line-height:1.2;}
+:where(.rhombus-player-controls){display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px;padding:8px 12px;background:#111;color:#eee;font:13px system-ui,sans-serif;}
+:where(.rhombus-player-group){display:flex;align-items:center;gap:8px;min-width:0;}
+:where(.rhombus-player-group-left){justify-self:start;}
+:where(.rhombus-player-group-center){justify-self:center;}
+:where(.rhombus-player-group-right){justify-self:end;}
+:where(.rhombus-player-btn){cursor:pointer;border:1px solid #3a3a3a;background:#1e1e1e;color:#eee;border-radius:6px;padding:5px 9px;font:inherit;line-height:1.2;display:inline-flex;align-items:center;justify-content:center;gap:5px;}
+:where(.rhombus-player-btn:hover:not(:disabled)){background:#2a2a2a;}
 :where(.rhombus-player-btn:disabled){opacity:.4;cursor:default;}
-:where(.rhombus-player-btn[data-active="true"]){border-color:#3b82f6;}
-:where(.rhombus-player-speed),:where(.rhombus-player-quality){cursor:pointer;border:1px solid #444;background:#1e1e1e;color:#eee;border-radius:4px;padding:3px 4px;font:inherit;}
-:where(.rhombus-player-speed-wrap){display:flex;align-items:center;gap:4px;}
+:where(.rhombus-player-btn[data-active="true"]){border-color:#3b82f6;color:#fff;}
+:where(.rhombus-player-btn-icon){padding:6px;min-width:32px;}
+:where(.rhombus-player-btn-play){padding:6px;min-width:38px;font-size:15px;}
+:where(.rhombus-player-speed),:where(.rhombus-player-quality){cursor:pointer;border:1px solid #3a3a3a;background:#1e1e1e;color:#eee;border-radius:6px;padding:4px 6px;font:inherit;}
+:where(.rhombus-player-speed-wrap){display:flex;align-items:center;gap:6px;}
 :where(.rhombus-player-speed-wrap[data-disabled="true"]){opacity:.4;}
-:where(.rhombus-player-zoom),:where(.rhombus-player-livetype),:where(.rhombus-player-clip){display:flex;align-items:center;gap:4px;}
-:where(.rhombus-player-clip){margin-left:auto;}
-:where(.rhombus-player-zoom-level){min-width:34px;text-align:center;}
+:where(.rhombus-player-zoom),:where(.rhombus-player-livetype){display:flex;align-items:center;gap:6px;}
+:where(.rhombus-player-zoom-level){min-width:38px;text-align:center;font-variant-numeric:tabular-nums;}
+:where(.rhombus-player-time){font-variant-numeric:tabular-nums;opacity:.8;white-space:nowrap;}
+:where(.rhombus-player-live){display:inline-flex;align-items:center;gap:6px;color:#22c55e;font-weight:600;}
+:where(.rhombus-player-live-dot){width:8px;height:8px;border-radius:50%;background:#22c55e;}
+:where(.rhombus-player-clip){display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 12px 8px;background:#111;color:#eee;font:13px system-ui,sans-serif;}
 :where(.rhombus-player-clip-status){opacity:.85;}
 :where(.rhombus-player-clip-link){color:#7ab8ff;}
+@media (max-width:680px){:where(.rhombus-player-controls){display:flex;flex-wrap:wrap;justify-content:center;}}
 `;
 
 function ensureStylesInjected() {
   if (typeof document === "undefined") return;
-  if (document.getElementById(STYLE_ID)) return;
-  const el = document.createElement("style");
-  el.id = STYLE_ID;
-  el.textContent = CONTROLS_CSS;
-  document.head.appendChild(el);
+  let el = document.getElementById(STYLE_ID) as HTMLStyleElement | null;
+  if (!el) {
+    el = document.createElement("style");
+    el.id = STYLE_ID;
+    document.head.appendChild(el);
+  }
+  // Keep content in sync (handles dev/HMR where the tag persists across reloads of this module).
+  if (el.textContent !== CONTROLS_CSS) el.textContent = CONTROLS_CSS;
 }
 
 const cx = (...xs: Array<string | undefined | false>) => xs.filter(Boolean).join(" ");
@@ -127,201 +146,221 @@ export function RhombusPlayerControls(props: RhombusPlayerControlsProps) {
 
   const show = (c: RhombusPlayerControl) => controls === undefined || controls.includes(c);
   const isLive = state.mode === "live";
+  const btnCls = classNames?.button;
 
   if (renderControls) {
     return (
       <>
-        {children}
         {renderControls(api, state)}
+        {children}
       </>
     );
   }
 
-  const anyButtons =
-    show("play") ||
-    show("goLive") ||
-    show("rewind") ||
-    show("speed") ||
-    show("zoom") ||
-    show("snapshot") ||
-    show("saveClip") ||
-    (show("liveType") && showLiveTypeSwitcher);
+  const showLiveType = show("liveType") && showLiveTypeSwitcher;
+  const hasLeft = show("zoom") || show("snapshot");
+  const hasCenter = show("rewind") || show("play") || show("speed");
+  const hasRight = show("goLive") || showLiveType;
+  const hasBar = hasLeft || hasCenter || hasRight;
 
   return (
     <>
-      {children}
-      {anyButtons && (
+      {hasBar && (
         <div className={cx("rhombus-player-controls", classNames?.controls)}>
-          {show("play") && (
-            <Btn
-              className={classNames?.button}
-              onClick={() => (state.playing ? api.pause() : api.play())}
-              title={state.playing ? "Pause" : "Play"}
-            >
-              {state.playing ? "❚❚" : "▶"}
-            </Btn>
-          )}
-
-          {show("goLive") && (
-            <Btn
-              className={classNames?.button}
-              onClick={() => api.goLive()}
-              disabled={isLive}
-              active={isLive}
-              title="Go to live"
-            >
-              {isLive ? "● LIVE" : "Go live"}
-            </Btn>
-          )}
-
-          {show("rewind") && (
-            <Btn className={classNames?.button} onClick={() => api.rewind()} title="Rewind">
-              « Rewind
-            </Btn>
-          )}
-
-          {show("speed") && (
-            <label className="rhombus-player-speed-wrap" data-disabled={isLive ? "true" : undefined}>
-              <span>Speed</span>
-              <select
-                className={cx("rhombus-player-speed", classNames?.speed)}
-                value={state.playbackRate}
-                disabled={isLive}
-                onChange={e => api.setPlaybackRate(Number(e.target.value))}
-              >
-                {SPEEDS.map(s => (
-                  <option key={s} value={s}>
-                    {s}×
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-
-          {show("zoom") && (
-            <span className="rhombus-player-zoom">
-              <Btn
-                className={classNames?.button}
-                onClick={() => api.zoomOut()}
-                disabled={state.zoom <= 1}
-                title="Zoom out"
-              >
-                −
-              </Btn>
-              <span className="rhombus-player-zoom-level">{state.zoom.toFixed(1)}×</span>
-              <Btn className={classNames?.button} onClick={() => api.zoomIn()} title="Zoom in">
-                ＋
-              </Btn>
-              {state.zoom > 1 && (
-                <Btn className={classNames?.button} onClick={() => api.resetZoom()} title="Reset zoom">
-                  Reset
-                </Btn>
-              )}
-            </span>
-          )}
-
-          {show("snapshot") && (
-            <Btn className={classNames?.button} onClick={() => void api.snapshot()} title="Snapshot">
-              ◎ Snapshot
-            </Btn>
-          )}
-
-          {show("liveType") && showLiveTypeSwitcher && (
-            <span className={cx("rhombus-player-livetype", classNames?.liveType)}>
-              <Btn
-                className={classNames?.button}
-                onClick={() => api.setLiveTransport("realtime")}
-                active={state.liveTransport === "realtime"}
-                title="Realtime — 0–1s latency, more CPU, may be lower resolution"
-              >
-                Realtime
-              </Btn>
-              <Btn
-                className={classNames?.button}
-                onClick={() => api.setLiveTransport("buffered")}
-                active={state.liveTransport === "buffered"}
-                title="Buffered — 5–8s latency, less CPU, max resolution"
-              >
-                Buffered
-              </Btn>
-              {state.liveTransport === "realtime" ? (
-                <select
-                  className="rhombus-player-quality"
-                  value={realtimeQuality}
-                  onChange={e => onChangeRealtimeQuality(e.target.value as RhombusRealtimeStreamQuality)}
+          {/* LEFT — view tools */}
+          <div className="rhombus-player-group rhombus-player-group-left">
+            {show("zoom") && (
+              <span className="rhombus-player-zoom">
+                <Btn
+                  className={cx("rhombus-player-btn-icon", btnCls)}
+                  onClick={() => api.zoomOut()}
+                  disabled={state.zoom <= 1}
+                  title="Zoom out"
                 >
-                  <option value="HD">HD</option>
-                  <option value="SD">SD</option>
+                  −
+                </Btn>
+                <span className="rhombus-player-zoom-level">{state.zoom.toFixed(1)}×</span>
+                <Btn
+                  className={cx("rhombus-player-btn-icon", btnCls)}
+                  onClick={() => api.zoomIn()}
+                  title="Zoom in"
+                >
+                  ＋
+                </Btn>
+                {state.zoom > 1 && (
+                  <Btn className={btnCls} onClick={() => api.resetZoom()} title="Reset zoom">
+                    Reset
+                  </Btn>
+                )}
+              </span>
+            )}
+            {show("snapshot") && (
+              <Btn className={btnCls} onClick={() => void api.snapshot()} title="Snapshot">
+                ◉ Snapshot
+              </Btn>
+            )}
+          </div>
+
+          {/* CENTER — transport */}
+          <div className="rhombus-player-group rhombus-player-group-center">
+            {show("rewind") && (
+              <Btn
+                className={cx("rhombus-player-btn-icon", btnCls)}
+                onClick={() => api.rewind()}
+                title="Rewind"
+              >
+                ⟲
+              </Btn>
+            )}
+            {show("play") && (
+              <Btn
+                className={cx("rhombus-player-btn-play", btnCls)}
+                onClick={() => (state.playing ? api.pause() : api.play())}
+                title={state.playing ? "Pause" : "Play"}
+              >
+                {state.playing ? "❚❚" : "▶"}
+              </Btn>
+            )}
+            {show("speed") && (
+              <label
+                className="rhombus-player-speed-wrap"
+                data-disabled={isLive ? "true" : undefined}
+                title={isLive ? "Playback speed (VOD only)" : "Playback speed"}
+              >
+                <select
+                  className={cx("rhombus-player-speed", classNames?.speed)}
+                  value={state.playbackRate}
+                  disabled={isLive}
+                  onChange={e => api.setPlaybackRate(Number(e.target.value))}
+                >
+                  {SPEEDS.map(s => (
+                    <option key={s} value={s}>
+                      {s}×
+                    </option>
+                  ))}
                 </select>
-              ) : (
-                connectionMode === "wan" && (
+              </label>
+            )}
+          </div>
+
+          {/* RIGHT — time + live status + live-type */}
+          <div className="rhombus-player-group rhombus-player-group-right">
+            {show("goLive") && (
+              <>
+                {!isLive && <span className="rhombus-player-time">{fmtClock(state.currentWallClockMs)}</span>}
+                {isLive ? (
+                  <span className="rhombus-player-live">
+                    <span className="rhombus-player-live-dot" />
+                    Live
+                  </span>
+                ) : (
+                  <Btn className={btnCls} onClick={() => api.goLive()} title="Go to live">
+                    Go to live
+                  </Btn>
+                )}
+              </>
+            )}
+            {showLiveType && isLive && (
+              <span className={cx("rhombus-player-livetype", classNames?.liveType)}>
+                <Btn
+                  className={btnCls}
+                  onClick={() => api.setLiveTransport("realtime")}
+                  active={state.liveTransport === "realtime"}
+                  title="Realtime — 0–1s latency, more CPU, may be lower resolution"
+                >
+                  Realtime
+                </Btn>
+                <Btn
+                  className={btnCls}
+                  onClick={() => api.setLiveTransport("buffered")}
+                  active={state.liveTransport === "buffered"}
+                  title="Buffered — 5–8s latency, less CPU, max resolution"
+                >
+                  Buffered
+                </Btn>
+                {state.liveTransport === "realtime" ? (
                   <select
                     className="rhombus-player-quality"
-                    value={bufferedQuality}
-                    onChange={e =>
-                      onChangeBufferedQuality(e.target.value as RhombusBufferedStreamQuality)
-                    }
+                    value={realtimeQuality}
+                    onChange={e => onChangeRealtimeQuality(e.target.value as RhombusRealtimeStreamQuality)}
                   >
-                    <option value="HIGH">High</option>
-                    <option value="MEDIUM">Medium</option>
-                    <option value="LOW">Low</option>
+                    <option value="HD">HD</option>
+                    <option value="SD">SD</option>
                   </select>
-                )
-              )}
-            </span>
-          )}
+                ) : (
+                  connectionMode === "wan" && (
+                    <select
+                      className="rhombus-player-quality"
+                      value={bufferedQuality}
+                      onChange={e =>
+                        onChangeBufferedQuality(e.target.value as RhombusBufferedStreamQuality)
+                      }
+                    >
+                      <option value="HIGH">High</option>
+                      <option value="MEDIUM">Medium</option>
+                      <option value="LOW">Low</option>
+                    </select>
+                  )
+                )}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
-          {show("saveClip") && (
-            <span className={cx("rhombus-player-clip", classNames?.clip)}>
-              <Btn className={classNames?.button} onClick={onSetClipStart} title="Set clip start to current time">
-                ⟦ Start: {fmtClock(clipRange.startMs)}
-              </Btn>
-              <Btn className={classNames?.button} onClick={onSetClipEnd} title="Set clip end to current time">
-                End: {fmtClock(clipRange.endMs)} ⟧
-              </Btn>
-              {clipRange.startMs != null && clipRange.endMs != null && (
-                <Btn className={classNames?.button} onClick={onClearClip} title="Clear selection">
-                  ✕
-                </Btn>
-              )}
-              {state.canSaveClip && (
-                <Btn
-                  className={classNames?.button}
-                  onClick={onExportClip}
-                  disabled={
-                    clipRange.startMs == null ||
-                    clipRange.endMs == null ||
-                    state.clipExport?.phase === "submitting" ||
-                    state.clipExport?.phase === "rendering"
-                  }
-                  title="Export clip"
-                >
-                  Save clip
-                </Btn>
-              )}
-              {state.clipExport && (
-                <span className={cx("rhombus-player-clip-status", classNames?.clipStatus)}>
-                  {state.clipExport.phase === "rendering"
-                    ? `Rendering ${state.clipExport.percentComplete ?? 0}%`
-                    : state.clipExport.phase === "complete"
-                      ? "Ready"
-                      : state.clipExport.phase === "error"
-                        ? `Error: ${state.clipExport.error}`
-                        : state.clipExport.phase}
-                  {state.clipExport.phase === "complete" && state.clipExport.downloadUrl && (
-                    <>
-                      {" "}
-                      <a
-                        className="rhombus-player-clip-link"
-                        href={state.clipExport.downloadUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Download
-                      </a>
-                    </>
-                  )}
-                </span>
+      {/* Timeline scrubber sits below the toolbar (Console order). */}
+      {children}
+
+      {/* Clip selection — its own row beneath the timeline (mirrors Console's clip toolbar). */}
+      {show("saveClip") && (
+        <div className={cx("rhombus-player-clip", classNames?.clip)}>
+          <Btn className={btnCls} onClick={onSetClipStart} title="Set clip start to current time">
+            ⟦ Start: {fmtClock(clipRange.startMs)}
+          </Btn>
+          <Btn className={btnCls} onClick={onSetClipEnd} title="Set clip end to current time">
+            End: {fmtClock(clipRange.endMs)} ⟧
+          </Btn>
+          {clipRange.startMs != null && clipRange.endMs != null && (
+            <Btn className={btnCls} onClick={onClearClip} title="Clear selection">
+              ✕
+            </Btn>
+          )}
+          {state.canSaveClip && (
+            <Btn
+              className={btnCls}
+              onClick={onExportClip}
+              disabled={
+                clipRange.startMs == null ||
+                clipRange.endMs == null ||
+                state.clipExport?.phase === "submitting" ||
+                state.clipExport?.phase === "rendering"
+              }
+              title="Export clip"
+            >
+              Save clip
+            </Btn>
+          )}
+          {state.clipExport && (
+            <span className={cx("rhombus-player-clip-status", classNames?.clipStatus)}>
+              {state.clipExport.phase === "rendering"
+                ? `Rendering ${state.clipExport.percentComplete ?? 0}%`
+                : state.clipExport.phase === "complete"
+                  ? "Ready"
+                  : state.clipExport.phase === "error"
+                    ? `Error: ${state.clipExport.error}`
+                    : state.clipExport.phase}
+              {state.clipExport.phase === "complete" && state.clipExport.downloadUrl && (
+                <>
+                  {" "}
+                  <a
+                    className="rhombus-player-clip-link"
+                    href={state.clipExport.downloadUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Download
+                  </a>
+                </>
               )}
             </span>
           )}
