@@ -7,7 +7,15 @@ import type {
   RhombusPlayerHandle,
   RhombusPlayerState,
   RhombusRealtimeStreamQuality,
+  RhombusVideoFit,
 } from "./types.js";
+
+const VIDEO_FIT_OPTIONS: Array<{ value: RhombusVideoFit; label: string }> = [
+  { value: "contain", label: "Aspect ratio" },
+  { value: "cover", label: "Cropped" },
+  { value: "fill", label: "Stretch" },
+  { value: "auto", label: "Auto-size" },
+];
 
 const SPEEDS = [0.5, 1, 2, 4];
 
@@ -76,6 +84,8 @@ type RhombusPlayerControlsProps = {
   bufferedQuality: RhombusBufferedStreamQuality;
   onChangeRealtimeQuality: (q: RhombusRealtimeStreamQuality) => void;
   onChangeBufferedQuality: (q: RhombusBufferedStreamQuality) => void;
+  videoFit: RhombusVideoFit;
+  onChangeVideoFit: (fit: RhombusVideoFit) => void;
   clipRange: { startMs: number | null; endMs: number | null };
   onSetClipStart: () => void;
   onSetClipEnd: () => void;
@@ -132,6 +142,8 @@ export function RhombusPlayerControls(props: RhombusPlayerControlsProps) {
     bufferedQuality,
     onChangeRealtimeQuality,
     onChangeBufferedQuality,
+    videoFit,
+    onChangeVideoFit,
     clipRange,
     onSetClipStart,
     onSetClipEnd,
@@ -158,7 +170,7 @@ export function RhombusPlayerControls(props: RhombusPlayerControlsProps) {
   }
 
   const showLiveType = show("liveType") && showLiveTypeSwitcher;
-  const hasLeft = show("zoom") || show("snapshot");
+  const hasLeft = show("zoom") || show("snapshot") || show("videoFit");
   const hasCenter = show("rewind") || show("play") || show("speed");
   const hasRight = show("goLive") || showLiveType;
   const hasBar = hasLeft || hasCenter || hasRight;
@@ -198,6 +210,21 @@ export function RhombusPlayerControls(props: RhombusPlayerControlsProps) {
               <Btn className={btnCls} onClick={() => void api.snapshot()} title="Snapshot">
                 ◉ Snapshot
               </Btn>
+            )}
+            {show("videoFit") && (
+              <select
+                className="rhombus-player-quality"
+                value={videoFit}
+                title="Video display"
+                aria-label="Video display"
+                onChange={e => onChangeVideoFit(e.target.value as RhombusVideoFit)}
+              >
+                {VIDEO_FIT_OPTIONS.map(o => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
             )}
           </div>
 

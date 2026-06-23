@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
 } from "react";
 import { RhombusBufferedPlayer } from "./RhombusBufferedPlayer.js";
 import { RhombusRealtimePlayer } from "./RhombusRealtimePlayer.js";
@@ -38,7 +39,20 @@ const ZOOM_STEP = 0.5;
 const DEFAULT_VOD_WINDOW_SEC = 7200;
 const DEFAULT_REWIND_SEC = 15;
 const DEFAULT_LIVE_EDGE_TOLERANCE_SEC = 5;
-const DEFAULT_TIMELINE_WINDOW_SEC = 3600;
+const DEFAULT_TIMELINE_WINDOW_SEC = 86_400;
+const HOUR_MS = 60 * 60_000;
+/** Timeline zoom steps (visible-window span), widest → narrowest. Index 0 is the default day view. */
+const ZOOM_STEPS_MS = [24 * HOUR_MS, 8 * HOUR_MS, 3 * HOUR_MS, HOUR_MS, 20 * 60_000, 5 * 60_000];
+
+function startOfLocalDay(ms: number): number {
+  const d = new Date(ms);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+function clampNum(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
+}
 const CLIP_POLL_INTERVAL_MS = 2_000;
 const WALLCLOCK_TICK_MS = 250;
 /** While a seek is settling, treat the video as "caught up" once it is within this of the target. */
@@ -55,7 +69,6 @@ function hasWebCodecs(): boolean {
   );
 }
 
-const fillStyle = { width: "100%", height: "100%", display: "block", objectFit: "contain" } as const;
 
 export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>(
   function RhombusPlayer(props, ref) {
@@ -63,6 +76,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
       cameraUuid,
       connectionMode = "wan",
       liveTransport: liveTransportProp,
+      videoFit: videoFitProp = "auto",
       showLiveTypeSwitcher = false,
       realtimeStreamQuality: realtimeQualityProp = "HD",
       bufferedStreamQuality: bufferedQualityProp = "HIGH",
@@ -115,18 +129,28 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
       endMs: null,
     });
     const [clipExport, setClipExport] = useState<RhombusClipExportStatus | undefined>(undefined);
-    const [timelineRange, setTimelineRange] = useState<{ startMs: number; endMs: number }>(() => {
-      const now = Date.now();
-      const win = (timeline?.windowSec ?? DEFAULT_TIMELINE_WINDOW_SEC) * 1000;
-      return { startMs: now - win, endMs: now };
-    });
+    // Timeline window is modeled as center + span (zoom step). `timelineCenterMs === null` ⇒
+    // auto-follow (day-center when zoomed out, the playhead when zoomed in). Chevrons pan the
+    // center; the zoom buttons / wheel change the zoom step. Both reset on Go Live.
+    const [timelineCenterMs, setTimelineCenterMs] = useState<number | null>(null);
+    const [timelineZoomIndex, setTimelineZoomIndex] = useState(0);
+    // Intrinsic video aspect ratio, measured for `videoFit="auto"` (defaults to 16:9 until known).
+    const [intrinsicAspect, setIntrinsicAspect] = useState({ w: 16, h: 9 });
+    // videoFit is "controllable": the prop seeds it and re-syncs when changed; the built-in
+    // "videoFit" control mutates it internally and fires `onVideoFitChange`.
+    const [videoFit, setVideoFit] = useState(videoFitProp);
+    useEffect(() => {
+      setVideoFit(videoFitProp);
+    }, [videoFitProp]);
 
     // ---- child handles ----
     const realtimeHandleRef = useRef<RhombusRealtimePlayerHandle>(null);
     const bufferedHandleRef = useRef<RhombusBufferedPlayerHandle>(null);
     const stageRef = useRef<HTMLDivElement>(null);
     const readyFiredRef = useRef(false);
-    const pauseOnReadyRef = useRef(false);
+    // Whether the user wants playback. Reconciled onto the <video> when a transport becomes ready
+    // (VOD dash inits paused, so a live→VOD seek must explicitly resume to match this intent).
+    const desiredPlayingRef = useRef(true);
     const panDragRef = useRef<{ active: boolean; x: number; y: number }>({ active: false, x: 0, y: 0 });
     // Intended wall-clock of an in-flight seek; the playhead pins here until the video catches up.
     const seekTargetRef = useRef<number | null>(null);
@@ -204,9 +228,11 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
     }, []);
 
     const goLive = useCallback(() => {
-      pauseOnReadyRef.current = false;
+      desiredPlayingRef.current = true;
       seekTargetRef.current = null;
       lastShownWallClockRef.current = null;
+      setTimelineCenterMs(null); // resume auto-following
+      setTimelineZoomIndex(0); // back to the day view
       setVodAnchorMs(null);
       setVodSeekOffsetSec(0);
       setPlaybackRate(1);
@@ -218,6 +244,9 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
     const seekTo = useCallback(
       (targetMs: number) => {
         const now = Date.now();
+        // A user seek implies "play from here" — reconciled when the (possibly fresh) transport
+        // becomes ready. (Seeking within an already-playing window just keeps playing.)
+        desiredPlayingRef.current = true;
         if (shouldSwitchToLive(targetMs, now, cfgRef.current.liveEdgeToleranceSec)) {
           goLive();
           return;
@@ -246,8 +275,9 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
     );
 
     const play = useCallback(() => {
+      desiredPlayingRef.current = true;
       if (modeRef.current === "vod" || liveTransportRef.current === "buffered") {
-        void getVideo()?.play();
+        getVideo()?.play().catch(() => {});
         setPlaying(true);
       } else {
         // realtime live is always playing; if we had paused into VOD, return to live
@@ -257,13 +287,13 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
     }, [getVideo, goLive]);
 
     const pause = useCallback(() => {
+      desiredPlayingRef.current = false;
       if (modeRef.current === "vod" || liveTransportRef.current === "buffered") {
         getVideo()?.pause();
         setPlaying(false);
         return;
       }
       // realtime live: freeze by dropping into VOD at ~now, paused once the <video> is ready
-      pauseOnReadyRef.current = true;
       setPlaying(false);
       enterVod(Date.now());
     }, [enterVod, getVideo]);
@@ -431,10 +461,14 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
         readyFiredRef.current = true;
         cbRef.current.onReady?.();
       }
-      if (pauseOnReadyRef.current) {
-        pauseOnReadyRef.current = false;
-        const v = getVideo();
-        if (v) {
+      // Reconcile the (possibly freshly-mounted) <video> with the desired play state. VOD dash
+      // initializes paused, so a live→VOD seek must resume here; a pause-into-VOD freezes here.
+      const v = getVideo();
+      if (v) {
+        if (desiredPlayingRef.current) {
+          v.play().catch(() => {});
+          setPlaying(true);
+        } else {
           v.pause();
           setPlaying(false);
         }
@@ -499,6 +533,29 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
       return () => clearInterval(id);
     }, [mode, computeWallClock, goLive, getVideo]);
 
+    // ---- measure intrinsic video aspect ratio (only needed for videoFit="auto") ----
+    useEffect(() => {
+      if (videoFit !== "auto") return;
+      const read = () => {
+        const v = getVideo();
+        if (v && v.videoWidth && v.videoHeight) {
+          setIntrinsicAspect(prev =>
+            prev.w === v.videoWidth && prev.h === v.videoHeight ? prev : { w: v.videoWidth, h: v.videoHeight }
+          );
+          return;
+        }
+        const c = getCanvas();
+        if (c && c.width && c.height) {
+          setIntrinsicAspect(prev =>
+            prev.w === c.width && prev.h === c.height ? prev : { w: c.width, h: c.height }
+          );
+        }
+      };
+      read();
+      const id = setInterval(read, 500);
+      return () => clearInterval(id);
+    }, [videoFit, getVideo, getCanvas, mode, liveTransportState]);
+
     // ---- onModeChange ----
     useEffect(() => {
       if (prevModeRef.current !== mode) {
@@ -512,33 +569,45 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
       cbRef.current.onPlayingChange?.(playing);
     }, [playing]);
 
-    // ---- timeline display window ----
-    // Live: pin the window to [now - W, now] (playhead rides the right edge).
-    // VOD: keep the window STABLE so a clicked time stays under the cursor; only scroll once
-    // the playhead leaves the visible window (normal scrubber behavior). Re-centering on every
-    // seek/tick would move the clicked time off the pixel the user clicked.
-    useEffect(() => {
-      const win = (timeline?.windowSec ?? DEFAULT_TIMELINE_WINDOW_SEC) * 1000;
-      const recompute = () => {
-        const now = Date.now();
-        if (modeRef.current === "live") {
-          setTimelineRange({ startMs: now - win, endMs: now });
-          return;
-        }
-        const cur = computeWallClock() ?? vodAnchorRef.current ?? now;
-        setTimelineRange(prev => {
-          const margin = win * 0.05;
-          // Keep the window unchanged while the playhead is comfortably inside it.
-          if (cur >= prev.startMs + margin && cur <= prev.endMs - margin) return prev;
-          // Otherwise scroll so the playhead is centered (never showing the future).
-          const endMs = Math.min(now, cur + win / 2);
-          return { startMs: endMs - win, endMs };
-        });
-      };
-      recompute();
-      const id = setInterval(recompute, 1_000);
-      return () => clearInterval(id);
-    }, [mode, timeline?.windowSec, computeWallClock]);
+    // ---- timeline display window (center + span/zoom, Console-style) ----
+    // Zoom step 0 = a full day aligned to local midnight (the default). Zooming in narrows the
+    // window around a focus (cursor/playhead). When the center is `null` the window auto-follows
+    // (day-center when zoomed out, the playhead when zoomed in). Chevrons pan by ±half-span; the
+    // zoom buttons / wheel change the step. Go Live resets to the day view.
+    const dayMs = (timeline?.windowSec ?? DEFAULT_TIMELINE_WINDOW_SEC) * 1000;
+    // Step 0 uses the configured window (default a full day); deeper steps use the fixed ladder.
+    const tlSpanMs = timelineZoomIndex === 0 ? dayMs : ZOOM_STEPS_MS[timelineZoomIndex];
+    const tlRefMs = mode === "live" ? Date.now() : currentWallClockMs ?? Date.now();
+    const tlAutoCenterMs =
+      timelineZoomIndex === 0 ? startOfLocalDay(tlRefMs) + dayMs / 2 : tlRefMs;
+    // User-set center is clamped so the window never sits entirely in the future.
+    const tlCenterMs =
+      timelineCenterMs == null ? tlAutoCenterMs : Math.min(timelineCenterMs, Date.now());
+    const tlRangeStartMs = tlCenterMs - tlSpanMs / 2;
+    const tlRangeEndMs = tlCenterMs + tlSpanMs / 2;
+    const tlCanShiftForward = tlRangeEndMs < Date.now() - 1;
+    const tlCanZoomIn = timelineZoomIndex < ZOOM_STEPS_MS.length - 1;
+    const tlCanZoomOut = timelineZoomIndex > 0;
+
+    const tlSpanRef = useRef(tlSpanMs);
+    tlSpanRef.current = tlSpanMs;
+    const tlCenterRef = useRef(tlCenterMs);
+    tlCenterRef.current = tlCenterMs;
+    const tlZoomIndexRef = useRef(timelineZoomIndex);
+    tlZoomIndexRef.current = timelineZoomIndex;
+
+    const shiftTimelineWindow = useCallback((dir: -1 | 1) => {
+      // Pan the window by half its width (±12h at the day view, smaller when zoomed in).
+      setTimelineCenterMs(tlCenterRef.current + dir * (tlSpanRef.current / 2));
+    }, []);
+
+    const zoomTimeline = useCallback((zoomIn: boolean, centerMs: number) => {
+      const next = clampNum(tlZoomIndexRef.current + (zoomIn ? 1 : -1), 0, ZOOM_STEPS_MS.length - 1);
+      if (next === tlZoomIndexRef.current) return;
+      setTimelineZoomIndex(next);
+      // Zooming all the way out returns to the auto day view; otherwise focus on the given time.
+      setTimelineCenterMs(next === 0 ? null : centerMs);
+    }, []);
 
     // ---- observable state snapshot ----
     const buildState = useCallback((): RhombusPlayerState => {
@@ -628,13 +697,22 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
       onError: props.onError,
     };
 
+    // videoFit → object-fit on the media (auto uses contain inside an aspect-ratio'd stage).
+    const isAutoFit = videoFit === "auto";
+    const mediaStyle = {
+      width: "100%",
+      height: "100%",
+      display: "block",
+      objectFit: isAutoFit ? "contain" : videoFit,
+    } as const;
+
     const child = showRealtime ? (
       <RhombusRealtimePlayer
         ref={realtimeHandleRef}
         {...baseChildProps}
         connectionMode={connectionMode}
         realtimeStreamQuality={realtimeQuality}
-        canvasProps={{ style: fillStyle }}
+        canvasProps={{ style: mediaStyle }}
         onReady={handleChildReady}
       />
     ) : (
@@ -647,23 +725,33 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
         seekOffsetSec={vodSeekOffsetSec}
         bufferedStreamQuality={bufferedQuality}
         applyBufferedStreamQuality={applyBufferedStreamQuality}
-        videoProps={{ controls: false, style: fillStyle }}
+        videoProps={{ controls: false, style: mediaStyle }}
         onReady={handleChildReady}
       />
     );
 
     const transform = zoom > 1 ? `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` : undefined;
 
+    // Auto-Size: the player box hugs the video (sized by width via aspect-ratio, height auto).
+    const rootStyle = isAutoFit
+      ? { display: "flex", flexDirection: "column", ...style, height: "auto" }
+      : { display: "flex", flexDirection: "column", ...style };
+    const stageStyle = isAutoFit
+      ? {
+          position: "relative",
+          overflow: "hidden",
+          background: "#000",
+          width: "100%",
+          aspectRatio: `${intrinsicAspect.w} / ${intrinsicAspect.h}`,
+        }
+      : { position: "relative", overflow: "hidden", background: "#000", flex: "1 1 auto", minHeight: 0 };
+
     return (
-      <div className={className} style={{ display: "flex", flexDirection: "column", ...style }}>
+      <div className={className} style={rootStyle as CSSProperties}>
         <div
           ref={stageRef}
           style={{
-            position: "relative",
-            overflow: "hidden",
-            background: "#000",
-            flex: "1 1 auto",
-            minHeight: 0,
+            ...(stageStyle as CSSProperties),
             cursor: zoom > 1 ? (panDragRef.current.active ? "grabbing" : "grab") : "default",
             touchAction: zoom > 1 ? "none" : undefined,
           }}
@@ -713,6 +801,11 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
           bufferedQuality={bufferedQuality}
           onChangeRealtimeQuality={setRealtimeQuality}
           onChangeBufferedQuality={setBufferedQuality}
+          videoFit={videoFit}
+          onChangeVideoFit={f => {
+            setVideoFit(f);
+            cbRef.current.onVideoFitChange?.(f);
+          }}
           clipRange={clipRange}
           onSetClipStart={() => {
             const t = computeWallClock();
@@ -743,14 +836,21 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
               federatedSessionToken={props.federatedSessionToken}
               headers={props.headers}
               getRequestHeaders={props.getRequestHeaders}
-              rangeStartMs={timelineRange.startMs}
-              rangeEndMs={timelineRange.endMs}
+              rangeStartMs={tlRangeStartMs}
+              rangeEndMs={tlRangeEndMs}
               currentTimeMs={mode === "live" ? Date.now() : currentWallClockMs}
               onSeek={seekTo}
+              onShiftWindow={shiftTimelineWindow}
+              canShiftForward={tlCanShiftForward}
+              onZoom={zoomTimeline}
+              canZoomIn={tlCanZoomIn}
+              canZoomOut={tlCanZoomOut}
               fetchSeekPoints={timeline?.fetchSeekPoints ?? true}
               includeAnyMotion={timeline?.includeAnyMotion ?? true}
               marks={timeline?.marks}
+              colors={timeline?.colors}
               height={timeline?.height}
+              onSeekPointsLoaded={timeline?.onSeekPointsLoaded}
               onError={props.onError}
             />
           )}

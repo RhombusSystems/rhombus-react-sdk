@@ -121,7 +121,7 @@ import { RhombusPlayer } from "@rhombussystems/react";
   apiOverrideBaseUrl="https://your-api.example.com"
   showLiveTypeSwitcher            // optional Console-style Realtime/Buffered + quality menu
   saveClip={{ defaultTitle: "Door cam" }}
-  timeline={{ windowSec: 3600, fetchSeekPoints: true }}
+  timeline={{ fetchSeekPoints: true }}   // 24h day window by default, ±12h chevrons
   onModeChange={(mode, atMs) => console.log(mode, new Date(atMs))}
 />
 ```
@@ -160,6 +160,8 @@ common to all players.)
 | `maxRetryIntervalMs` | `number` | — | `30000` | Auto-recovery backoff ceiling. `0` disables. |
 | `stallTimeoutMs` | `number` | — | `12000` | Stall watchdog. `0` disables. |
 | `liveTransport` | `"realtime" \| "buffered"` | — | `"realtime"` | Live transport. `realtime` auto-falls back to `buffered` without WebCodecs. |
+| `videoFit` | `"contain" \| "cover" \| "fill" \| "auto"` | — | `"auto"` | How the video fills its area (controllable; built-in `"videoFit"` control changes it). See [Video display / fit](#video-display--fit). |
+| `onVideoFitChange` | `(fit) => void` | — | — | Fired when the built-in video-display control changes the fit. |
 | `showLiveTypeSwitcher` | `boolean` | — | `false` | Render the Console-style Realtime/Buffered + quality menu in the bar. |
 | `realtimeStreamQuality` | `"HD" \| "SD"` | — | `"HD"` | Live quality when the resolved transport is realtime. |
 | `bufferedStreamQuality` | `"HIGH" \| "MEDIUM" \| "LOW"` | — | `"HIGH"` | DASH quality for buffered live + VOD. |
@@ -255,7 +257,7 @@ as a runtime constant (`RhombusPlayerControl.Play`, etc.), so use plain strings 
 members — whichever you prefer:
 
 ```tsx
-"play" | "goLive" | "rewind" | "speed" | "zoom" | "snapshot" | "saveClip" | "timeline" | "liveType"
+"play" | "goLive" | "rewind" | "speed" | "zoom" | "snapshot" | "saveClip" | "timeline" | "liveType" | "videoFit"
 ```
 
 ```tsx
@@ -273,6 +275,34 @@ import { RhombusPlayer, RhombusPlayerControl } from "@rhombussystems/react";
 // Headless — no built-in UI at all; drive everything through the ref:
 <RhombusPlayer ref={player} cameraUuid="…" controls={[]} />
 ```
+
+### Video display / fit
+
+Cameras are usually 16:9; when the player box isn't, you get letter/pillar-boxing. The
+`videoFit` prop controls how the footage fills its area, mirroring the Rhombus Console
+video-wall "Video Display" options:
+
+| `videoFit` | Console label | Behavior |
+|---|---|---|
+| `"auto"` *(default)* | Auto-Size | The **player box takes the video's aspect ratio** — no bars, no cropping. |
+| `"contain"` | Default Aspect Ratio | Full frame, letter/pillar-boxed (`object-fit: contain`). |
+| `"cover"` | Full View Cropped | Fills the box, crops overflow (`object-fit: cover`). |
+| `"fill"` | Stretch to Fit | Distorts to fill, no cropping (`object-fit: fill`). |
+
+There's a built-in **video-display control** in the bar (the `"videoFit"` control) so users can
+switch between these live; it fires `onVideoFitChange`. You can also drive it as a controlled
+prop:
+
+```tsx
+<RhombusPlayer cameraUuid="…" videoFit="cover" onVideoFitChange={setFit} />
+```
+
+> **`"auto"` sizes by width:** the player measures the video's intrinsic aspect ratio and sets
+> the stage's `aspect-ratio` (height is derived), so give the player a width and **don't impose a
+> fixed height** in that mode. The other three modes fill whatever box you give it.
+
+For the low-level `RhombusBufferedPlayer` / `RhombusRealtimePlayer`, set `object-fit` yourself via
+`videoProps.style` / `canvasProps.style`.
 
 ### Styling the controls
 
@@ -336,17 +366,47 @@ combine `controls={[]}` (no bar) with the `ref` handle and your own layout.
 
 ### Snapshots
 
-`snapshot()` returns a PNG of the current frame. It works in **both** modes — the realtime
-canvas and the MSE-fed DASH `<video>` are both untainted, so `toDataURL`/`toBlob` succeed.
+The Snapshot tool **captures the current frame and hands the image data back to you** — it does
+**not** auto-download and there is **no target container/ref to render into**. It works in both
+modes (the realtime canvas and the MSE-fed DASH `<video>` are both untainted, so `toDataURL` /
+`toBlob` succeed) and returns a `RhombusSnapshotResult`:
 
-```tsx
-const shot = await player.current!.snapshot();
-// shot: { dataUrl, blob, wallClockMs, mode, width, height }
-window.open(shot.dataUrl); // or upload shot.blob
+```ts
+type RhombusSnapshotResult = {
+  dataUrl: string;   // PNG data: URL
+  blob: Blob | null; // PNG blob (null only if toBlob is unavailable)
+  wallClockMs: number;
+  mode: "live" | "vod";
+  width: number;
+  height: number;
+};
 ```
 
-You can also pass `onSnapshot` to receive the same result whenever the built-in Snapshot
-button is used.
+You receive it **two ways** — both deliver the same result, including for the built-in Snapshot
+button:
+
+```tsx
+// 1) Callback — fires for the built-in button AND for api.snapshot()
+<RhombusPlayer cameraUuid="…" onSnapshot={(shot) => setPreview(shot.dataUrl)} />
+
+// 2) Imperative — capture on demand and use the returned result
+const shot = await playerRef.current!.snapshot();
+```
+
+The SDK never downloads or displays the image itself — render it (`<img src={shot.dataUrl} />`),
+upload `shot.blob`, or trigger a download yourself:
+
+```tsx
+const shot = await playerRef.current!.snapshot();
+const a = document.createElement("a");
+a.href = shot.dataUrl;                          // or URL.createObjectURL(shot.blob!)
+a.download = `snapshot-${shot.wallClockMs}.png`;
+a.click();
+```
+
+> The example app simply stores `onSnapshot`'s `dataUrl` in state and shows a thumbnail you can
+> right-click to save. For lower-level use, `snapshotCanvasElement` / `snapshotVideoElement` are
+> exported too.
 
 ### Save Clip
 
@@ -399,13 +459,21 @@ includes `"timeline"` (the default). Configure it with the `timeline` prop:
 
 ```ts
 type RhombusPlayerTimelineConfig = {
-  windowSec?: number;        // span of the scrubber, seconds. Default 3600 (1h)
+  windowSec?: number;        // span of the scrubber, seconds. Default 86400 (a full day)
   fetchSeekPoints?: boolean; // fetch event markers from /camera/getFootageSeekpointsV2. Default true
   includeAnyMotion?: boolean;
   marks?: TimelineMark[];    // extra static event bands / gaps
-  height?: number;           // px, default 48
+  colors?: TimelineColors;   // recolor seekpoints, bars, playhead, buttons (see below)
+  height?: number;           // px, default 56
+  onSeekPointsLoaded?: (points: RhombusFootageSeekPoint[]) => void; // diagnostics
 };
 ```
+
+By default the window is a **24h span aligned to local midnight** (Console-style). `RhombusPlayer`
+renders ‹/› chevrons that pan by half a span (**±12h** at the day view), and **−/+ zoom buttons +
+mouse-wheel zoom** that step through `24h → 8h → 3h → 1h → 20m → 5m` (centered on the cursor or
+playhead, with an animated transition) so you can pinpoint a moment when seekpoints bunch up.
+It auto-follows the current day/playhead until you navigate; **Go Live** resets to the day view.
 
 The player keeps the window stable while you scrub and only scrolls it once playback leaves
 the visible range, so the playhead always lands exactly where you click.
@@ -610,13 +678,59 @@ Accepts the [shared base props](#shared-base-props) (for the seekpoint fetch) pl
 | `currentTimeMs` | `number \| null` | — | Playhead position; omit to hide it. |
 | `onSeek` | `(wallClockMs) => void` | — **(required)** | Click/drag to seek. |
 | `onHoverTimeChange` | `(wallClockMs \| null) => void` | — | Pointer hover time. |
-| `fetchSeekPoints` | `boolean` | `false` | Fetch event markers for the range. |
+| `onShiftWindow` | `(direction: -1 \| 1) => void` | — | When provided, renders ‹/› chevrons that pan the window (`-1` earlier, `1` later). |
+| `canShiftBack` / `canShiftForward` | `boolean` | `true` | Enable/disable the respective chevron at a limit. |
+| `onZoom` | `(zoomIn: boolean, centerWallClockMs: number) => void` | — | When provided, enables −/+ zoom buttons **and mouse-wheel zoom** (centered on the cursor). Range changes animate. |
+| `canZoomIn` / `canZoomOut` | `boolean` | `true` | Enable/disable the respective zoom button at a limit. |
+| `fetchSeekPoints` | `boolean` | `false` | Fetch event markers for the range. Rendered as clustered colored dashes grouped by activity type. |
 | `includeAnyMotion` | `boolean` | `true` | Include generic motion in the fetch. |
 | `marks` | `TimelineMark[]` | — | Static event bands (`kind:"event"`) / gaps (`kind:"gap"`). |
-| `onSeekPointsLoaded` | `(RhombusFootageSeekPoint[]) => void` | — | Normalized seekpoints after each fetch. |
-| `height` | `number` | `48` | Canvas height in px. |
+| `onSeekPointsLoaded` | `(RhombusFootageSeekPoint[]) => void` | — | Normalized seekpoints after each fetch (handy for diagnostics). |
+| `colors` | `TimelineColors` | — | Override the canvas-drawn colors (see [Theming the timeline](#theming-the-timeline)). |
+| `height` | `number` | `56` | Canvas height in px. |
+
+`Timeline` also draws a **time axis with auto-spaced tick labels** (interval chosen for ~6
+divisions, `h a` / `h:mm a` format), an availability bar, a playhead, and a hover line.
 
 Exposes a `ref` handle: `{ refresh() }` to force a seekpoint refetch.
+
+### Theming the timeline
+
+The timeline is drawn on a `<canvas>`, so its colors can't be set with CSS. Pass a `colors`
+object instead (every field optional, merged over the defaults). On `RhombusPlayer` use
+`timeline={{ colors: … }}`; on the standalone `Timeline` use the `colors` prop:
+
+```tsx
+<RhombusPlayer
+  cameraUuid="…"
+  timeline={{
+    colors: {
+      background: "#0b1220",          // canvas fill (default transparent)
+      availabilityActive: "#22c55e",  // recorded-footage bar
+      availabilityInactive: "#334155",// empty/future bar
+      playhead: "#f59e0b",
+      hover: "rgba(255,255,255,0.6)",
+      tick: "#475569",
+      tickLabel: "#94a3b8",
+      seekpointDefault: "#60a5fa",     // activities not in eventColors
+      seekpointAlert: "#ef4444",       // alerted events
+      eventColors: {                   // merged over the built-in per-activity palette
+        MOTION_HUMAN: "#facc15",
+        MOTION_CAR: "#38bdf8",
+        FACE: "#34d399",
+      },
+      buttonBackground: "#1e293b",     // ‹/›/−/+ buttons
+      buttonBorder: "#475569",
+      buttonText: "#e2e8f0",
+    },
+  }}
+/>
+```
+
+`eventColors` keys are activity strings from `getFootageSeekpointsV2` (e.g. `MOTION`,
+`MOTION_HUMAN`, `MOTION_CAR`, `MOTION_ANIMAL`, `FACE`, `SOUND_LOUD`, …). The timeline's
+**wrapper** (and `RhombusPlayer`'s root) can still be styled via `className`/`style` /
+`classNames.timeline` — `colors.background` paints the canvas itself.
 
 ### Pairing it with a video source
 
@@ -878,7 +992,7 @@ the example repo's `server/proxy.mjs`.
 
 **Constants** (value **and** type — usable as named members or plain strings)
 
-- `RhombusPlayerControl` — `{ Play, GoLive, Rewind, Speed, Zoom, Snapshot, SaveClip, Timeline, LiveType }`.
+- `RhombusPlayerControl` — `{ Play, GoLive, Rewind, Speed, Zoom, Snapshot, SaveClip, Timeline, LiveType, VideoFit }`.
 
 **Types**
 
@@ -887,10 +1001,10 @@ the example repo's `server/proxy.mjs`.
 - Handles: `RhombusPlayerHandle`, `RhombusBufferedPlayerHandle`, `RhombusRealtimePlayerHandle`,
   `TimelineHandle`.
 - Unified player: `RhombusPlayerState`, `RhombusPlayerMode`,
-  `RhombusPlayerClassNames`, `RhombusLiveTransport`, `RhombusSnapshotResult`, `RhombusClipRange`,
+  `RhombusPlayerClassNames`, `RhombusLiveTransport`, `RhombusVideoFit`, `RhombusSnapshotResult`, `RhombusClipRange`,
   `RhombusClipExportPhase`, `RhombusClipExportStatus`, `RhombusSaveClipConfig`,
   `RhombusPlayerTimelineConfig`.
-- Timeline: `TimelineMark`, `RhombusFootageSeekPoint`.
+- Timeline: `TimelineMark`, `TimelineColors`, `RhombusFootageSeekPoint`.
 - Quality / mode: `RhombusBufferedStreamQuality`, `RhombusRealtimeStreamQuality`,
   `RhombusConnectionMode`, `RhombusRealtimeConnectionMode`, `RhombusPlayerPaths`.
 - Misc: `FederatedTokenFetchResult`, `RhombusDashPlayerCallbacks`, `RhombusDashQualityCallbacks`.

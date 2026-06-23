@@ -201,6 +201,17 @@ export type RhombusRealtimePlayerHandle = {
 /** Underlying live transport: low-latency WebCodecs canvas, or buffered DASH `<video>`. */
 export type RhombusLiveTransport = "realtime" | "buffered";
 
+/**
+ * How the video fills its area (mirrors the Rhombus Console video-wall "Video Display" options):
+ * - `contain` — **Default Aspect Ratio**: full frame, letter/pillar-boxed (`object-fit: contain`).
+ * - `cover` — **Full View Cropped**: fills the box, crops overflow (`object-fit: cover`).
+ * - `fill` — **Stretch to Fit**: distorts to fill, no cropping (`object-fit: fill`).
+ * - `auto` — **Auto-Size**: the player box takes the video's intrinsic aspect ratio, so there are
+ *   no bars and no cropping. In this mode the player sizes by **width** (its height is derived), so
+ *   give it a width and don't impose a fixed height.
+ */
+export type RhombusVideoFit = "contain" | "cover" | "fill" | "auto";
+
 /** Whether the unified player is showing the live edge or past (VOD) footage. */
 export type RhombusPlayerMode = "live" | "vod";
 
@@ -228,6 +239,8 @@ export const RhombusPlayerControl = {
   SaveClip: "saveClip",
   Timeline: "timeline",
   LiveType: "liveType",
+  /** The video-display / fit picker (Default Aspect Ratio / Cropped / Stretch / Auto-Size). */
+  VideoFit: "videoFit",
 } as const;
 
 /** A built-in control identifier — see {@link RhombusPlayerControl}. */
@@ -313,6 +326,41 @@ export type RhombusFootageSeekPoint = {
   raw: Record<string, unknown>;
 };
 
+/**
+ * Colors for the canvas-drawn parts of the {@link Timeline} (CSS can't reach canvas pixels).
+ * Every field is optional and merged over the SDK defaults; `eventColors` is merged over the
+ * built-in per-activity palette. Keys for `eventColors` are activity strings (e.g. `"MOTION"`,
+ * `"MOTION_HUMAN"`, `"FACE"`).
+ */
+export type TimelineColors = {
+  /** Canvas fill behind everything. Default transparent (the wrapper background shows through). */
+  background?: string;
+  /** Recorded-footage portion of the availability bar. */
+  availabilityActive?: string;
+  /** Empty / future portion of the availability bar. */
+  availabilityInactive?: string;
+  /** The playhead line. */
+  playhead?: string;
+  /** The hover indicator line. */
+  hover?: string;
+  /** Tick marks. */
+  tick?: string;
+  /** Tick labels. */
+  tickLabel?: string;
+  /** Seekpoint color for activities not present in `eventColors`. */
+  seekpointDefault?: string;
+  /** Seekpoint color for alerted events. */
+  seekpointAlert?: string;
+  /** Per-activity seekpoint colors, merged over the built-in palette. */
+  eventColors?: Record<string, string>;
+  /** ‹/›/−/+ button background. */
+  buttonBackground?: string;
+  /** ‹/›/−/+ button border. */
+  buttonBorder?: string;
+  /** ‹/›/−/+ button text/glyph. */
+  buttonText?: string;
+};
+
 export type TimelineProps = RhombusPlayerBaseProps & {
   /** Left edge of the visible time window (epoch ms). */
   rangeStartMs: number;
@@ -324,6 +372,22 @@ export type TimelineProps = RhombusPlayerBaseProps & {
   onSeek: (wallClockMs: number) => void;
   /** Called as the pointer hovers the bar (epoch ms), or `null` when it leaves. */
   onHoverTimeChange?: (wallClockMs: number | null) => void;
+  /** When provided, renders ‹/› chevrons that shift the visible window. `-1` = earlier, `1` = later. */
+  onShiftWindow?: (direction: -1 | 1) => void;
+  /** Enable/disable the back (‹) chevron. Default `true`. */
+  canShiftBack?: boolean;
+  /** Enable/disable the forward (›) chevron. Default `true`. */
+  canShiftForward?: boolean;
+  /**
+   * When provided, enables zoom: dedicated −/+ buttons and mouse-wheel zoom (centered on the
+   * cursor). `zoomIn` is `true` to narrow the window, `false` to widen it; `centerWallClockMs`
+   * is the time to keep centered. Range changes animate.
+   */
+  onZoom?: (zoomIn: boolean, centerWallClockMs: number) => void;
+  /** Enable/disable the zoom-in (+) button. Default `true`. */
+  canZoomIn?: boolean;
+  /** Enable/disable the zoom-out (−) button. Default `true`. */
+  canZoomOut?: boolean;
   /** Fetch event seekpoints for the visible range from `/camera/getFootageSeekpointsV2`. */
   fetchSeekPoints?: boolean;
   /** Include generic motion events in the seekpoint fetch (`includeAnyMotion`). */
@@ -332,19 +396,28 @@ export type TimelineProps = RhombusPlayerBaseProps & {
   marks?: TimelineMark[];
   /** Called with normalized seekpoints whenever a fetch completes. */
   onSeekPointsLoaded?: (points: RhombusFootageSeekPoint[]) => void;
-  /** Pixel height of the canvas. Default `48`. */
+  /** Override the canvas-drawn colors (background, availability bar, seekpoints, playhead, …). */
+  colors?: TimelineColors;
+  /** Pixel height of the canvas. Default `56`. */
   height?: number;
 };
 
 /** Timeline configuration passed to {@link RhombusPlayer}. */
 export type RhombusPlayerTimelineConfig = {
-  /** How much time the scrubber spans, in seconds. Default `3600` (1 hour up to live). */
+  /**
+   * How much time the scrubber spans, in seconds. Default `86400` (a full day, Console-style:
+   * the window is aligned to local midnight and the ‹/› chevrons shift it by half a span (±12h)).
+   */
   windowSec?: number;
   /** Fetch event seekpoints. Default `true`. */
   fetchSeekPoints?: boolean;
   includeAnyMotion?: boolean;
   marks?: TimelineMark[];
   height?: number;
+  /** Override the timeline's canvas-drawn colors (seekpoints, availability bar, playhead, …). */
+  colors?: TimelineColors;
+  /** Called with normalized seekpoints whenever a fetch completes (handy for diagnostics). */
+  onSeekPointsLoaded?: (points: RhombusFootageSeekPoint[]) => void;
 };
 
 /**
@@ -415,6 +488,13 @@ export type RhombusPlayerHandle = {
 export type RhombusPlayerProps = RhombusPlayerBaseProps & {
   /** Default live transport. Default `realtime` (auto-falls back to `buffered` without WebCodecs). */
   liveTransport?: RhombusLiveTransport;
+  /**
+   * How the video fills its area. Default `"auto"` (the player box takes the video's aspect ratio,
+   * so there are no bars). See {@link RhombusVideoFit}. Acts as the initial value: the built-in
+   * `"videoFit"` control updates it internally; pass it as a controlled value (updating it from
+   * `onVideoFitChange`) to drive it externally.
+   */
+  videoFit?: RhombusVideoFit;
   /** Show the manual Live-type + quality switcher UI (Console-style). Default `false`. */
   showLiveTypeSwitcher?: boolean;
   /** Realtime live quality (used when the resolved transport is realtime). */
@@ -452,6 +532,8 @@ export type RhombusPlayerProps = RhombusPlayerBaseProps & {
   onPlayingChange?: (playing: boolean) => void;
   onSnapshot?: (result: RhombusSnapshotResult) => void;
   onZoomChange?: (zoom: number, panX: number, panY: number) => void;
+  /** Fired when the built-in video-display control changes the fit. */
+  onVideoFitChange?: (fit: RhombusVideoFit) => void;
   /** Fired whenever the user selects a clip range (regardless of built-in export). */
   onClipRangeSelect?: (range: RhombusClipRange) => void;
   /** Built-in clip export progress/result. */

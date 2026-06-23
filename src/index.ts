@@ -24,6 +24,7 @@ export type {
   RhombusPlayerMode,
   RhombusPlayerClassNames,
   RhombusLiveTransport,
+  RhombusVideoFit,
   RhombusSnapshotResult,
   RhombusClipRange,
   RhombusClipExportPhase,
@@ -33,6 +34,7 @@ export type {
   // Timeline
   TimelineProps,
   TimelineMark,
+  TimelineColors,
   RhombusFootageSeekPoint,
 } from "./types.js";
 export { getDefaultRhombusDashSettings, getDefaultRhombusVodDashSettings } from "./dashSettings.js";
