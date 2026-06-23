@@ -13,6 +13,11 @@ export type RhombusRealtimeSessionOptions = {
   wsUrl: string;
   canvas: HTMLCanvasElement;
   onError: (error: Error) => void;
+  /**
+   * Called every time the underlying WebSocket transitions to `OPEN` — including the
+   * initial connect and each successful auto-reconnect. Consumers can use this to clear
+   * "reconnecting…" UI surfaced via {@link RhombusRealtimeSessionOptions.onRecoveryAttempt}.
+   */
   onReady?: () => void;
   /**
    * Called before each auto-reconnect attempt (server-initiated reconnects, transport errors,
@@ -270,8 +275,6 @@ export function startRhombusRealtimeSession(options: RhombusRealtimeSessionOptio
     }
   };
 
-  let firstReadyFired = false;
-
   const createWebSocket = () => {
     if (destroyed) return;
 
@@ -290,10 +293,7 @@ export function startRhombusRealtimeSession(options: RhombusRealtimeSessionOptio
       connected = true;
       clearConnectTimeout();
       startStallChecker();
-      if (!firstReadyFired) {
-        firstReadyFired = true;
-        onReady?.();
-      }
+      onReady?.();
     };
 
     socket.onmessage = (event: MessageEvent) => {

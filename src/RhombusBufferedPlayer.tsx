@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import {
   MediaPlayer,
   type ErrorEvent as DashJSErrorEvent,
@@ -21,7 +21,11 @@ import {
   isRecoverableDashError,
   mergeRequestHeaders,
 } from "./rhombusPlayback.js";
-import type { RhombusBufferedStreamQuality, RhombusBufferedPlayerProps } from "./types.js";
+import type {
+  RhombusBufferedStreamQuality,
+  RhombusBufferedPlayerHandle,
+  RhombusBufferedPlayerProps,
+} from "./types.js";
 import { joinUrl } from "./urlAuth.js";
 
 const DEFAULT_FEDERATED_PATH = "/api/federated-token";
@@ -39,32 +43,46 @@ const STALL_CHECK_INTERVAL_MS = 1_000;
 /** `<video>.currentTime` movement smaller than this between samples is treated as "no progress". */
 const STALL_PROGRESS_EPSILON_SEC = 0.05;
 
-export function RhombusBufferedPlayer({
-  cameraUuid,
-  connectionMode,
-  apiOverrideBaseUrl,
-  rhombusApiBaseUrl,
-  paths,
-  federatedSessionToken,
-  tokenDurationSec = 86_400,
-  headers,
-  getRequestHeaders,
-  startTimeSec,
-  vodDurationSec = DEFAULT_VOD_DURATION_SEC,
-  seekOffsetSec = 0,
-  maxRetryIntervalMs = DEFAULT_MAX_RETRY_INTERVAL_MS,
-  stallTimeoutMs = DEFAULT_STALL_TIMEOUT_MS,
-  onRecoveryAttempt,
-  videoProps,
-  className,
-  style,
-  bufferedStreamQuality,
-  applyBufferedStreamQuality,
-  onReady,
-  onError,
-}: RhombusBufferedPlayerProps) {
+export const RhombusBufferedPlayer = forwardRef<
+  RhombusBufferedPlayerHandle,
+  RhombusBufferedPlayerProps
+>(function RhombusBufferedPlayer(
+  {
+    cameraUuid,
+    connectionMode,
+    apiOverrideBaseUrl,
+    rhombusApiBaseUrl,
+    paths,
+    federatedSessionToken,
+    tokenDurationSec = 86_400,
+    headers,
+    getRequestHeaders,
+    startTimeSec,
+    vodDurationSec = DEFAULT_VOD_DURATION_SEC,
+    seekOffsetSec = 0,
+    maxRetryIntervalMs = DEFAULT_MAX_RETRY_INTERVAL_MS,
+    stallTimeoutMs = DEFAULT_STALL_TIMEOUT_MS,
+    onRecoveryAttempt,
+    videoProps,
+    className,
+    style,
+    bufferedStreamQuality,
+    applyBufferedStreamQuality,
+    onReady,
+    onError,
+  },
+  ref
+) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerRef = useRef<MediaPlayerClass | null>(null);
+  useImperativeHandle(
+    ref,
+    () => ({
+      getVideoElement: () => videoRef.current,
+      getDashPlayer: () => playerRef.current,
+    }),
+    []
+  );
   const onReadyRef = useRef(onReady);
   const onErrorRef = useRef(onError);
   const onRecoveryAttemptRef = useRef(onRecoveryAttempt);
@@ -562,12 +580,15 @@ export function RhombusBufferedPlayer({
       className={className}
       style={style}
       playsInline
-      controls={isVod}
       muted
       {...videoProps}
+      // Default: native controls in VOD only. A consumer (e.g. RhombusPlayer driving its own
+      // control bar) can override by passing `videoProps.controls`. Placed after the spread so an
+      // explicit `videoProps.controls` wins and an omitted one falls back to `isVod` (not undefined).
+      controls={videoProps?.controls ?? isVod}
     />
   );
-}
+});
 
 function isRhombusSafariDash(): boolean {
   if (typeof navigator === "undefined") return false;

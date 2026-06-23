@@ -1,283 +1,1020 @@
-# Rhombus React SDK (`@rhombussystems/react`)
+# Rhombus React SDK — `@rhombussystems/react`
 
-React + TypeScript library for streaming Rhombus cameras using **federated session tokens**: MPEG-DASH live (Dash.js) via **`RhombusBufferedPlayer`**, and low-latency **H.264 over WebSocket** via **`RhombusRealtimePlayer`** (WebCodecs). Your Rhombus API key must never ship to the browser; the usual pattern is a short-lived federated token from your backend (or a token minted server-side with a browser-authorized `domain` — see the Rhombus [**Generate federated session token**](https://docs.rhombus.com/#927fe3b3-7e39-4709-9d4e-8d3da95940cd) API docs).
+React + TypeScript components for embedding **Rhombus camera video** in your own app. The
+SDK streams over two transports — **MPEG-DASH** (Dash.js) and **low-latency H.264 over
+WebSocket** (WebCodecs) — and ships a **unified drop-in player** that combines them with a
+full set of player controls.
+
+Your Rhombus **API key never ships to the browser**. Everything is built around short-lived
+**federated session tokens** minted by your backend (see [Authentication](#authentication--tokens)).
+
+> **Version:** this guide tracks `@rhombussystems/react` **2.0.0**. React **18+**.
+
+---
+
+## Contents
+
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Choosing a component](#choosing-a-component)
+- [`RhombusPlayer` — the unified player](#rhombusplayer--the-unified-player)
+  - [How Live ⇄ VOD switching works](#how-live--vod-switching-works)
+  - [Props](#rhombusplayer-props)
+  - [Imperative handle (`ref`)](#imperative-handle-ref)
+  - [Observable state](#observable-state)
+  - [Choosing which controls render](#choosing-which-controls-render)
+  - [Styling the controls](#styling-the-controls)
+  - [Snapshots](#snapshots)
+  - [Save Clip](#save-clip)
+  - [Timeline configuration](#timeline-configuration)
+  - [Recipes](#rhombusplayer-recipes)
+- [`RhombusBufferedPlayer` — DASH live & VOD](#rhombusbufferedplayer--dash-live--vod)
+- [`RhombusRealtimePlayer` — low-latency live](#rhombusrealtimeplayer--low-latency-live)
+- [`Timeline` — standalone scrubber](#timeline--standalone-scrubber)
+- [Authentication & tokens](#authentication--tokens)
+- [WAN vs LAN](#wan-vs-lan)
+- [Stream quality](#stream-quality)
+- [Auto-recovery / reconnect](#auto-recovery--reconnect)
+- [Backend contract](#backend-contract)
+- [Exported API surface](#exported-api-surface)
+- [Browser support](#browser-support)
+- [Troubleshooting](#troubleshooting)
+- [Migrating from 1.x → 2.0](#migrating-from-1x--20)
+- [Maintainers](#maintainers)
+
+---
 
 ## Install
 
-Add the published package to your application (requires **React 18+**):
-
 ```bash
 npm install @rhombussystems/react
+# or: yarn add @rhombussystems/react  /  pnpm add @rhombussystems/react
 ```
 
-With Yarn or pnpm: `yarn add @rhombussystems/react` or `pnpm add @rhombussystems/react`.
+- `react` and `react-dom` (**>= 18**) are **peer dependencies** — install them in your app.
+- **`dashjs`** is bundled (used for DASH playback) — you do not install it separately.
+- The realtime/canvas path uses the browser **WebCodecs** `VideoDecoder` (Chrome, Edge,
+  Safari 16.4+; Firefox H.264 is still limited) — no extra dependency.
 
-**Peer dependencies:** `react` and `react-dom` (**>= 18**). Install them in your app if needed. **dashjs** is included as a dependency of this package for DASH playback—you do not need to install it separately for **`RhombusBufferedPlayer`**.
-
-**Realtime WebSocket:** **`RhombusRealtimePlayer`** uses the browser **WebCodecs** `VideoDecoder` (Chrome, Edge, Safari 16.4+ with H.264; Firefox support is still limited). There is no extra npm dependency for realtime mode.
+---
 
 ## Quick start
 
+A complete live/VOD player with controls, a timeline, zoom, snapshot, and clip export —
+from a single `cameraUuid`:
+
 ```tsx
-import { RhombusBufferedPlayer } from "@rhombussystems/react";
+import { RhombusPlayer } from "@rhombussystems/react";
 
 export function CameraView() {
-  return <RhombusBufferedPlayer cameraUuid="YOUR_CAMERA_UUID" />;
+  return (
+    <RhombusPlayer
+      cameraUuid="YOUR_CAMERA_UUID"
+      apiOverrideBaseUrl="https://your-api.example.com" // proxy mode (recommended)
+      style={{ height: 480 }}
+    />
+  );
+}
+```
+<br>
+
+> ⚠️ **Server setup is required.** The SDK calls *your* origin for a token. Your server must
+> expose `POST /api/federated-token` (the default path) or set `paths.federatedToken` to your
+> route. Built-in **Save Clip** additionally needs a few proxy routes. See the
+> [Backend contract](#backend-contract).
+
+<br>
+Prefer to compose your own layout? Drop down to the individual building blocks — each has a
+deep-dive section further down the page:
+
+- [**`RhombusBufferedPlayer`**](#rhombusbufferedplayer--dash-live--vod) — MPEG-DASH live & VOD on a real `<video>` element; native pause/seek, widest browser support.
+- [**`RhombusRealtimePlayer`**](#rhombusrealtimeplayer--low-latency-live) — sub-second live H.264 over WebSocket, decoded with WebCodecs onto a `<canvas>` (live only).
+
+---
+
+## Choosing a component
+
+| Component | Transport | Live latency | Live | Past (VOD) | Controls |
+|---|---|---|:--:|:--:|---|
+| **`RhombusPlayer`** | both — realtime canvas for live, DASH for VOD, switched automatically | sub-second live | ✅ | ✅ | ✅ full bar + `ref` API |
+| **`RhombusBufferedPlayer`** | MPEG-DASH (Dash.js) on a `<video>` | ~few seconds | ✅ | ✅ | native `<video>` |
+| **`RhombusRealtimePlayer`** | H.264 / WebSocket → WebCodecs → `<canvas>` | sub-second | ✅ | ❌ | none (always live) |
+| **`Timeline`** | none — a canvas scrubber you pair with any video | — | — | — | seek UI only |
+
+**Rule of thumb:** reach for **`RhombusPlayer`** first — it's the drop-in. Drop down to the
+individual players when you want to compose your own layou or have a single source of truth for your playback time and playback state (ex: video walls).  
+
+---
+
+## `RhombusPlayer` — the unified player
+
+`RhombusPlayer` composes `RhombusRealtimePlayer` and `RhombusBufferedPlayer` behind one
+interface and adds player-level controls: **play/pause, go-live, rewind, playback speed,
+digital zoom + pan, snapshot, an event-aware timeline, and save clip**. It automatically
+switches between **Live** and **VOD** as the user interacts with the timeline and Go-Live button.
+
+```tsx
+import { RhombusPlayer } from "@rhombussystems/react";
+
+<RhombusPlayer
+  cameraUuid="YOUR_CAMERA_UUID"
+  apiOverrideBaseUrl="https://your-api.example.com"
+  showLiveTypeSwitcher            // optional Console-style Realtime/Buffered + quality menu
+  saveClip={{ defaultTitle: "Door cam" }}
+  timeline={{ windowSec: 3600, fetchSeekPoints: true }}
+  onModeChange={(mode, atMs) => console.log(mode, new Date(atMs))}
+/>
+```
+
+### How Live ⇄ VOD switching works
+
+Switching is a pure function of **time vs. now**:
+
+- **Live** uses the **realtime** transport by default (`RhombusRealtimePlayer`, WebCodecs
+  canvas, sub-second). It auto-falls back to **buffered** DASH when WebCodecs is unavailable.
+- **Pause, rewind, change speed, or seek into the past** drops the player into **VOD**
+  (`RhombusBufferedPlayer` anchored on a manifest window containing the target time).
+- **Go Live** (or seeking within `liveEdgeToleranceSec` of now) returns to the live edge.
+
+Only one transport is mounted at a time, so a switch costs one brief reconnect (no double
+bandwidth). Seeking **within** the loaded VOD window is instant (native `<video>` seek);
+seeking **outside** it loads a fresh manifest window.
+
+### `RhombusPlayer` props
+
+Every prop `RhombusPlayer` accepts. Only `cameraUuid` is required; everything else is
+optional. (The auth / endpoint / resilience props are the [shared base props](#shared-base-props)
+common to all players.)
+
+| Prop | Type | Required | Default | Notes |
+|------|------|:--:|---------|-------|
+| `cameraUuid` | `string` | ✅ | — | Camera UUID from Rhombus. Safe in the browser. |
+| `connectionMode` | `"wan" \| "lan"` | — | `"wan"` | Which `getMediaUris` URIs to use. See [WAN vs LAN](#wan-vs-lan). |
+| `apiOverrideBaseUrl` | `string` | — | — | Base for the token **and** media requests (proxy mode). Required for built-in [Save Clip](#save-clip). When omitted, media is fetched directly from Rhombus. |
+| `rhombusApiBaseUrl` | `string` | — | `https://api2.rhombussystems.com/api` | Rhombus REST base when `apiOverrideBaseUrl` is omitted. |
+| `paths` | `{ federatedToken?, mediaUris?, footageSeekpoints? }` | — | see [backend](#backend-contract) | Override route paths. |
+| `federatedSessionToken` | `string` | — | — | Supply & rotate your own token; the SDK skips its token endpoint. |
+| `tokenDurationSec` | `number` | — | `86400` | Requested token TTL (SDK-managed mode). |
+| `headers` | `HeadersInit` | — | — | Static headers for the token request (+ media when `apiOverrideBaseUrl` set). |
+| `getRequestHeaders` | `() => HeadersInit \| Promise<…>` | — | — | Async headers merged after `headers`. |
+| `maxRetryIntervalMs` | `number` | — | `30000` | Auto-recovery backoff ceiling. `0` disables. |
+| `stallTimeoutMs` | `number` | — | `12000` | Stall watchdog. `0` disables. |
+| `liveTransport` | `"realtime" \| "buffered"` | — | `"realtime"` | Live transport. `realtime` auto-falls back to `buffered` without WebCodecs. |
+| `showLiveTypeSwitcher` | `boolean` | — | `false` | Render the Console-style Realtime/Buffered + quality menu in the bar. |
+| `realtimeStreamQuality` | `"HD" \| "SD"` | — | `"HD"` | Live quality when the resolved transport is realtime. |
+| `bufferedStreamQuality` | `"HIGH" \| "MEDIUM" \| "LOW"` | — | `"HIGH"` | DASH quality for buffered live + VOD. |
+| `applyBufferedStreamQuality` | `boolean` | — | `true` | Set `false` to omit the `_ds` downscale. |
+| `initialMode` | `"live" \| "vod"` | — | `"live"` | Start live or jump straight into the past. |
+| `initialStartTimeMs` | `number` (epoch ms) | — | — | Anchor used when `initialMode="vod"`. |
+| `vodWindowSec` | `number` | — | `7200` | Length of the VOD manifest window the SDK requests. |
+| `defaultRewindSec` | `number` | — | `15` | Step used by the Rewind button / `rewind()`. |
+| `liveEdgeToleranceSec` | `number` | — | `5` | A seek within this many seconds of now counts as live. |
+| `autoGoLiveAtEdge` | `boolean` | — | `false` | Auto-return to live when VOD playback catches up to the edge. |
+| `controls` | `RhombusPlayerControl[]` | — | `undefined` | Which built-in controls to render. Leaving it `undefined` renders every control; `[]` = headless. There is no `"all"` value. See [below](#choosing-which-controls-render). |
+| `classNames` | `RhombusPlayerClassNames` | — | — | Per-slot class names for the bar. See [Styling](#styling-the-controls). |
+| `renderControls` | `(api, state) => ReactNode` | — | — | Replace the bar entirely (timeline still renders). |
+| `saveClip` | `RhombusSaveClipConfig` | — | — | Built-in clip export config. See [Save Clip](#save-clip). |
+| `timeline` | `RhombusPlayerTimelineConfig` | — | — | Timeline/scrubber config. See [Timeline](#timeline-configuration). |
+| `className` / `style` | `string` / `CSSProperties` | — | — | Applied to the player's root element. |
+| `onReady` | `() => void` | — | — | First underlying transport became ready. |
+| `onError` | `(error: Error) => void` | — | — | Token / media / setup failure. |
+| `onRecoveryAttempt` | `(attempt, error) => void` | — | — | Fires on each auto-recovery retry. |
+| `onModeChange` | `(mode, atWallClockMs) => void` | — | — | Fired on every Live ⇄ VOD transition. |
+| `onTransportChange` | `(transport) => void` | — | — | Resolved live transport changed (incl. WebCodecs fallback). |
+| `onSeek` | `(wallClockMs, mode) => void` | — | — | A seek happened. |
+| `onPlayingChange` | `(playing) => void` | — | — | Play/pause state changed. |
+| `onSnapshot` | `(RhombusSnapshotResult) => void` | — | — | A snapshot was captured. |
+| `onZoomChange` | `(zoom, panX, panY) => void` | — | — | Zoom/pan changed. |
+| `onClipRangeSelect` | `(RhombusClipRange) => void` | — | — | User selected a clip range (fires regardless of built-in export). |
+| `onClipExport` | `(RhombusClipExportStatus) => void` | — | — | Built-in clip export progress/result. |
+
+### Imperative handle (`ref`)
+
+Pass a `ref` to drive the player programmatically. The built-in control bar uses this exact
+API internally, so anything the buttons do, you can do too.
+
+```tsx
+import { useRef } from "react";
+import { RhombusPlayer, type RhombusPlayerHandle } from "@rhombussystems/react";
+
+function Controlled() {
+  const player = useRef<RhombusPlayerHandle>(null);
+  return (
+    <>
+      <RhombusPlayer ref={player} cameraUuid="…" apiOverrideBaseUrl="https://api.example.com" />
+      <button onClick={() => player.current?.pause()}>Pause</button>
+      <button onClick={() => player.current?.goLive()}>Go live</button>
+      <button onClick={() => player.current?.rewind(30)}>« 30s</button>
+      <button onClick={() => player.current?.seekTo(Date.now() - 3_600_000)}>1h ago</button>
+      <button onClick={async () => {
+        const shot = await player.current?.snapshot();
+        if (shot) downloadDataUrl(shot.dataUrl, "frame.png");
+      }}>Snapshot</button>
+    </>
+  );
 }
 ```
 
-> [!WARNING]
-> **Server setup required.** The SDK calls your app’s origin for a token, then Rhombus for media. Your server **must** implement **`POST /api/federated-token`** (the default path), or set **`paths.federatedToken`** to match whatever route you expose. Server side, when you call Rhombus **`generateFederatedSessionToken`**, include a **`domain`** that allows this page’s origin to use the token against `api2.rhombussystems.com` from the browser—otherwise you may see CORS or auth failures. 
+| Method | Description |
+|--------|-------------|
+| `play()` / `pause()` | Play / pause. Pausing live drops into a frozen VOD frame. |
+| `goLive()` | Return to the live edge (restores the live transport). |
+| `seekTo(wallClockMs)` | Seek to an absolute time (epoch ms); auto-switches Live ⇄ VOD. |
+| `rewind(seconds?)` | Jump back `seconds` (default `defaultRewindSec`). |
+| `setPlaybackRate(rate)` | VOD only; ignored while live. |
+| `zoomIn(step?)` / `zoomOut(step?)` | Digital zoom (1×–4×). |
+| `setZoom(zoom, panX?, panY?)` / `resetZoom()` | Set zoom + pan directly / reset to 1×. |
+| `snapshot()` | `Promise<RhombusSnapshotResult>` — capture the current frame. |
+| `setLiveTransport("realtime" \| "buffered")` | Switch transport (clamps to buffered without WebCodecs). |
+| `startClipExport(range?)` | `Promise<RhombusClipExportStatus>` — export a clip (proxy mode). |
+| `getState()` | Current [`RhombusPlayerState`](#observable-state) snapshot. |
 
-See the Rhombus [**Generate federated session token**](https://docs.rhombus.com/#927fe3b3-7e39-4709-9d4e-8d3da95940cd) API docs. If something fails, check the browser console for **`[RhombusBufferedPlayer]`** messages.
+### Observable state
 
-Under the hood: the SDK **`POST`**s to **`window.location.origin` + `paths.federatedToken`** (default **`/api/federated-token`**), then **`POST`**s **media URIs** directly to the Rhombus API (`rhombusApiBaseUrl`, default **`https://api2.rhombussystems.com/api`**, path default **`/camera/getMediaUris`**) with federated auth headers. For this direct browser request to succeed, your server must include a **`domain`** field when calling Rhombus [**`generateFederatedSessionToken`**](https://docs.rhombus.com/#927fe3b3-7e39-4709-9d4e-8d3da95940cd) — `domain` authorizes the browser's origin to call `api2.rhombussystems.com` with the token. Without it, the request will be blocked by CORS or rejected with a 401/403. Alternatively, set **`apiOverrideBaseUrl`** (or override **`paths.mediaUris`**) to route media-URI requests through your own backend, avoiding direct browser-to-Rhombus calls entirely.
+`renderControls(api, state)` receives — and `getState()` returns — a `RhombusPlayerState`:
 
-### Buffered DASH: `connectionMode` (WAN vs LAN)
+```ts
+type RhombusPlayerState = {
+  cameraUuid: string;
+  mode: "live" | "vod";
+  liveTransport: "realtime" | "buffered";  // resolved (may have fallen back)
+  playing: boolean;
+  playbackRate: number;
+  currentWallClockMs: number | null;        // ≈ Date.now() while live
+  zoom: number;
+  isAtLiveEdge: boolean;
+  canSaveClip: boolean;                      // built-in export available (proxy mode)
+  clipExport?: RhombusClipExportStatus;      // in-progress / finished export
+};
+```
 
-**`RhombusBufferedPlayer`** uses the same **`getMediaUris`** response as realtime:
+### Choosing which controls render
 
-- **`connectionMode="wan"`** (default) — reads **`wanLiveMpdUri`** and plays the cloud / WAN manifest with Dash.js.
-- **`connectionMode="lan"`** — reads **`lanLiveMpdUris`** (or **`lanLiveMpdUri`** if present); the **first** non-empty entry is used (same selection idea as **`RhombusRealtimePlayer`** LAN). The page must be able to reach that host (routing, firewall, **HTTPS vs HTTP** mixed-content rules). Manifest and segments still get **`x-auth-scheme=federated-token`** and **`x-auth-ft`** on the URL query string.
-
-**`bufferedStreamQuality`** / **`applyBufferedStreamQuality`** apply on LAN the same as WAN (query **`_ds`** on manifest and segments). Rhombus Console often hides quality controls on LAN; set **`applyBufferedStreamQuality={false}`** if you want full-resolution LAN only.
-
-### VOD / historical footage
-
-**`RhombusBufferedPlayer`** also supports playing back recorded (VOD) footage from Rhombus cameras. Set **`startTimeSec`** to switch from live to VOD mode — when omitted the player streams live as before:
+`controls` is a list of `RhombusPlayerControl`. It's exported **both** as a string union and
+as a runtime constant (`RhombusPlayerControl.Play`, etc.), so use plain strings or named
+members — whichever you prefer:
 
 ```tsx
-import { RhombusBufferedPlayer } from "@rhombussystems/react";
+"play" | "goLive" | "rewind" | "speed" | "zoom" | "snapshot" | "saveClip" | "timeline" | "liveType"
+```
 
-export function HistoricalView() {
-  // Play back footage starting at midnight UTC on 2025-04-15
-  const start = Math.floor(new Date("2025-04-15T00:00:00Z").getTime() / 1000);
+```tsx
+import { RhombusPlayer, RhombusPlayerControl } from "@rhombussystems/react";
 
+// All controls — omit the prop entirely:
+<RhombusPlayer cameraUuid="…" />
+
+// A subset — plain strings:
+<RhombusPlayer cameraUuid="…" controls={["play", "timeline"]} />
+
+// …or the named constant (autocompletes, refactor-safe):
+<RhombusPlayer cameraUuid="…" controls={[RhombusPlayerControl.Play, RhombusPlayerControl.Timeline]} />
+
+// Headless — no built-in UI at all; drive everything through the ref:
+<RhombusPlayer ref={player} cameraUuid="…" controls={[]} />
+```
+
+### Styling the controls
+
+Three options, least → most custom:
+
+**1. Plain CSS overrides.** The bar uses stable class names, and the SDK ships its defaults
+as a **zero-specificity `:where()` stylesheet** injected once at runtime. Because every
+default selector sits inside `:where()` (specificity `0,0,0`), your CSS **always wins — no
+`!important`, no import, regardless of load order**:
+
+| Element | class |
+|---|---|
+| the bar | `rhombus-player-controls` |
+| every button | `rhombus-player-btn` (active: `[data-active="true"]`; disabled: `:disabled`) |
+| speed `<select>` | `rhombus-player-speed` |
+| quality `<select>` | `rhombus-player-quality` |
+| live-type group | `rhombus-player-livetype` |
+| clip group | `rhombus-player-clip` |
+| clip status text | `rhombus-player-clip-status` |
+| timeline wrapper | `rhombus-player-timeline` |
+
+```css
+.rhombus-player-controls { background: #fff; color: #111; gap: 12px; }
+.rhombus-player-btn { background: #0a7; border-color: #0a7; border-radius: 999px; }
+.rhombus-player-btn[data-active="true"] { outline: 2px solid #0a7; }
+```
+
+**2. `classNames` prop** — attach your own class per slot (Tailwind, CSS-modules, design
+systems). Appended to the SDK's class on that element:
+
+```tsx
+<RhombusPlayer
+  cameraUuid="…"
+  classNames={{ controls: "flex gap-3 p-2 bg-white", button: "btn btn-sm", clip: "ml-auto" }}
+/>
+```
+
+**3. `renderControls`** — replace the bar entirely (the timeline still renders above it) and
+build your own buttons against the imperative `api`:
+
+```tsx
+<RhombusPlayer
+  cameraUuid="…"
+  renderControls={(api, s) => (
+    <div className="my-bar">
+      <button onClick={() => (s.playing ? api.pause() : api.play())}>
+        {s.playing ? "Pause" : "Play"}
+      </button>
+      {s.mode === "vod" && <button onClick={() => api.goLive()}>Go live</button>}
+      <button onClick={() => api.rewind()}>« 15s</button>
+      <button disabled={s.mode === "live"} onClick={() => api.setPlaybackRate(2)}>2×</button>
+      <button onClick={() => api.zoomIn()}>＋</button>
+      <button onClick={() => void api.snapshot()}>Snapshot</button>
+    </div>
+  )}
+/>
+```
+
+`renderControls` is fully optional — omit it to keep the built-in bar. For total control,
+combine `controls={[]}` (no bar) with the `ref` handle and your own layout.
+
+### Snapshots
+
+`snapshot()` returns a PNG of the current frame. It works in **both** modes — the realtime
+canvas and the MSE-fed DASH `<video>` are both untainted, so `toDataURL`/`toBlob` succeed.
+
+```tsx
+const shot = await player.current!.snapshot();
+// shot: { dataUrl, blob, wallClockMs, mode, width, height }
+window.open(shot.dataUrl); // or upload shot.blob
+```
+
+You can also pass `onSnapshot` to receive the same result whenever the built-in Snapshot
+button is used.
+
+### Save Clip
+
+Built-in clip export drives Rhombus `/video/spliceV3`, polls render progress, and surfaces a
+download URL.
+
+> **Proxy mode required.** The clip endpoints are **API-key / session authed, not
+> federated-token compatible**, so the request must go through *your* backend (which attaches
+> the API key) — exactly like the media-URI proxy. Built-in export is only available when
+> `apiOverrideBaseUrl` is set. Without a proxy, the export UI is hidden and the player still
+> fires `onClipRangeSelect` so you can export it yourself. See the
+> [Backend contract](#clip-routes-built-in-save-clip).
+
+```tsx
+<RhombusPlayer
+  cameraUuid="…"
+  apiOverrideBaseUrl="https://your-api.example.com"
+  saveClip={{ defaultTitle: "Incident", maxDurationSec: 600 }}
+  onClipExport={(s) => {
+    if (s.phase === "rendering") setProgress(s.percentComplete);
+    if (s.phase === "complete") window.location.assign(s.downloadUrl!);
+  }}
+/>
+```
+
+```ts
+type RhombusSaveClipConfig = {
+  enabled?: boolean;        // default true when apiOverrideBaseUrl is set
+  paths?: { splice?: string; progress?: string; download?: string };
+  defaultTitle?: string;
+  maxDurationSec?: number;  // default 3600 (server caps at 60 min)
+};
+
+type RhombusClipExportStatus = {
+  phase: "selecting" | "submitting" | "rendering" | "complete" | "error" | "canceled";
+  clipUuid?: string;
+  percentComplete?: number;  // 0–100 while rendering
+  currentOperation?: string;
+  downloadUrl?: string;      // set when complete
+  error?: string;
+};
+```
+
+You can also trigger export imperatively: `await player.current!.startClipExport({ startMs, endMs, cameraUuid })`.
+
+### Timeline configuration
+
+`RhombusPlayer` renders a [`Timeline`](#timeline--standalone-scrubber) when `controls`
+includes `"timeline"` (the default). Configure it with the `timeline` prop:
+
+```ts
+type RhombusPlayerTimelineConfig = {
+  windowSec?: number;        // span of the scrubber, seconds. Default 3600 (1h)
+  fetchSeekPoints?: boolean; // fetch event markers from /camera/getFootageSeekpointsV2. Default true
+  includeAnyMotion?: boolean;
+  marks?: TimelineMark[];    // extra static event bands / gaps
+  height?: number;           // px, default 48
+};
+```
+
+The player keeps the window stable while you scrub and only scrolls it once playback leaves
+the visible range, so the playhead always lands exactly where you click.
+
+### `RhombusPlayer` recipes
+
+**Open straight into an event (past footage):**
+
+```tsx
+<RhombusPlayer
+  cameraUuid="…"
+  apiOverrideBaseUrl="https://api.example.com"
+  initialMode="vod"
+  initialStartTimeMs={new Date("2025-04-15T09:30:00Z").getTime()}
+/>
+```
+
+**Auto-return to live when caught up, wider rewind step:**
+
+```tsx
+<RhombusPlayer cameraUuid="…" autoGoLiveAtEdge defaultRewindSec={30} />
+```
+
+**Force broadest browser support (buffered live everywhere):**
+
+```tsx
+<RhombusPlayer cameraUuid="…" liveTransport="buffered" />
+```
+
+**Headless — your UI, our engine:**
+
+```tsx
+function MyPlayer() {
+  const ref = useRef<RhombusPlayerHandle>(null);
+  const [state, setState] = useState<RhombusPlayerState>();
+  return (
+    <>
+      <RhombusPlayer ref={ref} cameraUuid="…" controls={[]} onModeChange={() => setState(ref.current?.getState())} />
+      {/* render your own toolbar from `state` and `ref.current` */}
+    </>
+  );
+}
+```
+
+---
+
+## `RhombusBufferedPlayer` — DASH live & VOD
+
+Renders live or historical footage with Dash.js into a `<video>` element. This is the right
+choice when you want native `<video>` semantics, the widest browser support, or you're
+composing your own layout.
+
+```tsx
+<RhombusBufferedPlayer
+  cameraUuid="YOUR_CAMERA_UUID"
+  connectionMode="wan"          // "wan" (default) | "lan"
+  bufferedStreamQuality="HIGH"  // "HIGH" | "MEDIUM" | "LOW"
+  videoProps={{ controls: true, style: { width: "100%" } }}
+  onReady={() => console.log("playing")}
+  onError={(e) => console.error(e)}
+/>
+```
+
+### <a id="shared-base-props"></a>Shared base props (all players)
+
+These come from `RhombusPlayerBaseProps` and are accepted by **every** player:
+
+| Prop | Type | Default | Notes |
+|------|------|---------|-------|
+| `cameraUuid` | `string` | — **(required)** | Camera UUID from Rhombus. Safe in the browser. |
+| `connectionMode` | `"wan" \| "lan"` | `"wan"`¹ | Which `getMediaUris` URIs to use. See [WAN vs LAN](#wan-vs-lan). |
+| `apiOverrideBaseUrl` | `string` | — | Base for the token **and** media requests. Set for proxy mode. When omitted, media is fetched **directly from Rhombus** (needs a domain-scoped token). |
+| `rhombusApiBaseUrl` | `string` | `https://api2.rhombussystems.com/api` | Rhombus REST base when `apiOverrideBaseUrl` is omitted. |
+| `paths` | `{ federatedToken?, mediaUris?, footageSeekpoints? }` | see [backend](#backend-contract) | Override route paths. |
+| `federatedSessionToken` | `string` | — | Supply & rotate your own token; the SDK skips its token endpoint. |
+| `tokenDurationSec` | `number` | `86400` | Requested token TTL (SDK-managed mode). |
+| `headers` | `HeadersInit` | — | Static headers for the token request (+ media when `apiOverrideBaseUrl` set). |
+| `getRequestHeaders` | `() => HeadersInit \| Promise<…>` | — | Async headers merged after `headers`. |
+| `maxRetryIntervalMs` | `number` | `30000` | Auto-recovery backoff ceiling. `0` disables. |
+| `stallTimeoutMs` | `number` | `12000` | Stall watchdog. `0` disables. |
+| `onRecoveryAttempt` | `(attempt, error) => void` | — | Fires on each retry. |
+| `className` / `style` | `string` / `CSSProperties` | — | Applied to the player element. |
+| `onError` | `(error: Error) => void` | — | Token / media / setup failure. |
+
+¹ `connectionMode` is **required** (no default) on `RhombusRealtimePlayer`.
+
+### `RhombusBufferedPlayer`-specific props
+
+| Prop | Type | Default | Notes |
+|------|------|---------|-------|
+| `startTimeSec` | `number` (Unix **seconds**) | — | **Set to play the past** (VOD). Omit for live. Changing it re-attaches a new manifest. |
+| `vodDurationSec` | `number` | `7200` | VOD window length; how far you can seek before a new manifest is needed. |
+| `seekOffsetSec` | `number` | `0` | Where in the window playback begins. |
+| `bufferedStreamQuality` | `"HIGH" \| "MEDIUM" \| "LOW"` | `"HIGH"` | Server downscale via `_ds`. Updating doesn't re-fetch the manifest. |
+| `applyBufferedStreamQuality` | `boolean` | `true` | `false` omits `_ds` (full resolution). |
+| `videoProps` | `VideoHTMLAttributes` | — | Spread onto the `<video>` (`controls`, `muted`, `onClick`, `style`, …). |
+| `onReady` | `() => void` | — | Dash.js initialized and manifest loaded. |
+
+Exposes a `ref` handle: `{ getVideoElement(), getDashPlayer() }`.
+
+**Live vs. past — the single switch is `startTimeSec`:**
+
+```tsx
+function CameraPlayer({ cameraUuid, mode }: { cameraUuid: string; mode: "live" | "past" }) {
+  const startTimeSec =
+    mode === "past" ? Math.floor(new Date("2025-04-15T00:00:00Z").getTime() / 1000) : undefined;
   return (
     <RhombusBufferedPlayer
-      cameraUuid="YOUR_CAMERA_UUID"
-      startTimeSec={start}
-      vodDurationSec={3600}   // 1-hour manifest window (default 7200 = 2 hours)
-      seekOffsetSec={300}     // begin playback 5 minutes in
+      cameraUuid={cameraUuid}
+      startTimeSec={startTimeSec}  // undefined => live, number => VOD
+      vodDurationSec={3600}
+      videoProps={{ controls: true }}
     />
   );
 }
 ```
 
-| Prop | Role |
-|------|------|
-| `startTimeSec` | Unix epoch **seconds**. When set, the player fetches a VOD MPD URI template (`wanVodMpdUriTemplate` / `lanVodMpdUrisTemplates`) from `getMediaUris` instead of the live URI. Changing this value tears down and re-creates the Dash.js player with a new manifest. |
-| `vodDurationSec` | Length of the manifest window in seconds. Default `7200` (2 hours). Controls how far the user can seek forward within the loaded manifest before a new one is needed. |
-| `seekOffsetSec` | Offset in seconds from `startTimeSec` at which playback begins. Default `0`. |
-
-**How it works:** Rhombus `getMediaUris` returns VOD URI **templates** like `.../dash/web/outbound/{camera}/{session}/{START_TIME}/{DURATION}/vod/file.mpd` (WAN) or `.../store/{START_TIME}_{DURATION}/clip.mpd` (LAN). The SDK fills `{START_TIME}` and `{DURATION}` from your props, then initializes Dash.js with VOD-tuned settings (larger buffers, no live catchup, buffering while paused for scrubbing). Auth, quality modifiers, and connection mode work identically to live.
-
-**Sliding the window:** To navigate beyond the current manifest window, update `startTimeSec` in your app state. The player will tear down and re-attach with the new manifest. For example, a custom timeline control could update `startTimeSec` when the user drags past the window edge.
-
-**Advanced:** `formatVodMpdUri(template, startTimeSec, durationSec)` and `getDefaultRhombusVodDashSettings()` are exported for consumers who need to build VOD URLs or configure Dash.js themselves.
-
-### Federated token refresh (SDK-managed)
-
-When **`federatedSessionToken` is omitted**, the SDK periodically re-fetches the token from your **`POST`** federated-token route so streams outlive a single token TTL. The next refresh is scheduled at approximately **97%** of the effective lifetime, where effective lifetime is the minimum of:
-
-- the requested **`tokenDurationSec`** (sent as **`durationSec`** in the JSON body), and
-- optional server hints in the token JSON response: **`expiresInSec`** (seconds), **`expiresAtMs`** (Unix ms), or **`expiresAt`** (ISO date string or Unix seconds/ms).
-
-**DASH (`RhombusBufferedPlayer`):** Dash.js keeps running; segment and manifest requests read the **current** token from an internal ref, so rotation does not reset the player.
-
-**Realtime (`RhombusRealtimePlayer`):** Auth is on the WebSocket URL, so each refresh **closes and reopens** the socket (expect a short blip). **`onReady`** fires only after the **first** successful connection for that mount.
-
-When **`federatedSessionToken` is set**, the SDK does **not** call your token endpoint. You must mint and refresh tokens yourself; pass an updated string to rotate. DASH picks up the new value without remounting; realtime reconnects when the prop changes.
-
-Optional helpers (advanced / testing): **`fetchFederatedSessionToken`**, **`getFederatedTokenRefreshDelayMs`**, type **`FederatedTokenFetchResult`**.
-
-## Realtime WebSocket: `RhombusRealtimePlayer`
-
-Use **`getMediaUris`** (same POST as DASH). The component reads **`wanLiveH264Uri`** or **`wanLiveH264Uris`**, and **`lanLiveH264Uri`** or **`lanLiveH264Uris`** (Rhombus may return either a single string or an array). It decodes Rhombus’s TLV-framed H.264 stream and draws to a **`<canvas>`**.
-
-- **`connectionMode="wan"`** — Uses **`wanLiveH264Uri`** / **`wanLiveH264Uris`** and appends **`x-auth-scheme=federated-token`** and **`x-auth-ft=<token>`** to the WebSocket URL (same idea as DASH segment URLs).
-- **`connectionMode="lan"`** — Uses **`lanLiveH264Uri`** / **`lanLiveH264Uris`** and appends the **same** federated query parameters on the socket URL so LAN realtime works without cookies (including from **`localhost`**).
-
-> [!NOTE]
-> **v1.0 (breaking):** LAN no longer uses **`document.cookie`** or props like **`applyLanAuthCookie`**. **`setRhombusLanAuthCookie`** was removed. Upgrade only when your Rhombus deployment accepts federated-token query params on LAN WebSocket URLs.
+**Scrub beyond the window** by updating `startTimeSec` from your own timeline:
 
 ```tsx
-import { RhombusRealtimePlayer } from "@rhombussystems/react";
-
-export function RealtimeCameraWan() {
-  return (
-    <RhombusRealtimePlayer
-      cameraUuid="YOUR_CAMERA_UUID"
-      connectionMode="wan"
-      apiOverrideBaseUrl="https://your-api.example.com"
-    />
-  );
-}
+const [startTimeSec, setStartTimeSec] = useState(() => Math.floor(Date.now() / 1000) - 3600);
+<input type="datetime-local" onChange={(e) => {
+  const ms = new Date(e.target.value).getTime();
+  if (!Number.isNaN(ms)) setStartTimeSec(Math.floor(ms / 1000)); // loads a fresh window
+}} />
+<RhombusBufferedPlayer cameraUuid={cameraUuid} startTimeSec={startTimeSec} videoProps={{ controls: true }} />
 ```
 
-Optional exports for custom wiring: **`resolveLiveH264WebSocketUrl`**, **`startRhombusRealtimeSession`**.
+> **Pausing *live* DASH** lets it fall behind the live edge; Dash.js catches up on resume.
+> For frame-accurate pause use VOD mode (`startTimeSec`) — or just use `RhombusPlayer`, which
+> handles this for you.
 
-## Stream quality (optional)
+`formatVodMpdUri(template, startTimeSec, durationSec)` and `getDefaultRhombusVodDashSettings()`
+are exported if you need to build VOD URLs or tune Dash.js yourself.
 
-You can change how aggressively Rhombus serves **live** video without touching token or media-URI fetching yourself.
+---
 
-### DASH — `RhombusBufferedPlayer`
+## `RhombusRealtimePlayer` — low-latency live
 
-- **`bufferedStreamQuality`**: `"HIGH"` (default) | `"MEDIUM"` | `"LOW"`. Each step asks Rhombus to downscale on the **server** by adding a `_ds=…` query on **segment and manifest** URLs (same idea as Rhombus Console buffered quality). Works for **`connectionMode="wan"`** and **`"lan"`**. Dash.js ABR stays off; quality follows this setting.
-- **`applyBufferedStreamQuality`**: default **`true`**. Set **`false`** to omit **`_ds`** entirely (WAN or LAN).
-
-Changing **`bufferedStreamQuality`** or **`applyBufferedStreamQuality`** does **not** re-fetch the MPD or federated token—the Dash **`RequestModifier`** reads the latest values on each request, so a simple prop update is enough. Changing **`connectionMode`** re-initializes Dash.js.
-
-### Realtime WebSocket — `RhombusRealtimePlayer`
-
-- **`realtimeStreamQuality`**: **`"HD"`** (default) | **`"SD"`**. **`SD`** rewrites the socket path **`/ws` → `/wsl`**, which requests a lower-resolution stream from Rhombus (aligned with Console realtime SD/HD).
-
-Changing **`realtimeStreamQuality`** **closes and reopens** the WebSocket, so expect a short blip—there is no in-place path switch.
-
-Types are exported as **`RhombusBufferedStreamQuality`**, **`RhombusRealtimeStreamQuality`**, **`RhombusConnectionMode`** (also **`RhombusRealtimeConnectionMode`**, an alias), and **`RhombusBufferedPlayerProps`** / **`RhombusRealtimePlayerProps`**.
+Live H.264 over WebSocket, decoded with WebCodecs onto a `<canvas>`. **Live only** — no
+pause, seek, or VOD. Sub-second latency; ideal for a video wall or PTZ control.
 
 ```tsx
+<RhombusRealtimePlayer
+  cameraUuid="YOUR_CAMERA_UUID"
+  connectionMode="wan"          // REQUIRED: "wan" | "lan"
+  realtimeStreamQuality="HD"    // "HD" (/ws) | "SD" (/wsl)
+  style={{ width: "100%", background: "#111" }}
+  onReady={() => console.log("connected")}
+  onError={(e) => console.error(e)}
+/>
+```
+
+Accepts all [shared base props](#shared-base-props), plus:
+
+| Prop | Type | Default | Notes |
+|------|------|---------|-------|
+| `connectionMode` | `"wan" \| "lan"` | — **(required)** | `wan` → `wanLiveH264Uri(s)`; `lan` → `lanLiveH264Uri(s)`. Federated auth is added as query params on the socket URL. |
+| `realtimeStreamQuality` | `"HD" \| "SD"` | `"HD"` | `SD` rewrites `/ws` → `/wsl`. Changing it **reconnects** (brief blip). |
+| `canvasProps` | `CanvasHTMLAttributes` | — | Spread onto the `<canvas>`. |
+| `onReady` | `() => void` | — | Fires on **every** WebSocket `OPEN` (first connect *and* each reconnect). |
+
+Exposes a `ref` handle: `{ getCanvasElement() }`.
+
+> **`onReady` and token rotation differ from buffered:** realtime `onReady` fires on every
+> (re)connect, and because auth is on the socket URL, each token refresh closes/reopens the
+> socket (short blip). The buffered player rotates tokens without a teardown.
+
+Optional low-level exports for custom wiring: `resolveLiveH264WebSocketUrl(options)`,
+`startRhombusRealtimeSession(options)`.
+
+---
+
+## `Timeline` — standalone scrubber
+
+A vendor-neutral **canvas scrubber**. It does **not** embed a player — pair it with any video
+source (or let `RhombusPlayer` drive it for you). It draws an availability bar, event
+seekpoints (optionally fetched from `/camera/getFootageSeekpointsV2`), static marks, a
+playhead, and a hover line, and emits `onSeek(wallClockMs)` on click/drag.
+
+```tsx
+import { Timeline } from "@rhombussystems/react";
+
+<Timeline
+  cameraUuid="YOUR_CAMERA_UUID"
+  apiOverrideBaseUrl="https://your-api.example.com"
+  rangeStartMs={Date.now() - 3_600_000}
+  rangeEndMs={Date.now()}
+  currentTimeMs={playheadMs}
+  fetchSeekPoints
+  marks={[{ startMs: t0, endMs: t1, kind: "event", color: "#f80", label: "Motion" }]}
+  onSeek={(ms) => setPlayheadMs(ms)}
+  onHoverTimeChange={(ms) => setHoverMs(ms)}
+/>
+```
+
+Accepts the [shared base props](#shared-base-props) (for the seekpoint fetch) plus:
+
+| Prop | Type | Default | Notes |
+|------|------|---------|-------|
+| `rangeStartMs` / `rangeEndMs` | `number` (epoch ms) | — **(required)** | Visible time window. |
+| `currentTimeMs` | `number \| null` | — | Playhead position; omit to hide it. |
+| `onSeek` | `(wallClockMs) => void` | — **(required)** | Click/drag to seek. |
+| `onHoverTimeChange` | `(wallClockMs \| null) => void` | — | Pointer hover time. |
+| `fetchSeekPoints` | `boolean` | `false` | Fetch event markers for the range. |
+| `includeAnyMotion` | `boolean` | `true` | Include generic motion in the fetch. |
+| `marks` | `TimelineMark[]` | — | Static event bands (`kind:"event"`) / gaps (`kind:"gap"`). |
+| `onSeekPointsLoaded` | `(RhombusFootageSeekPoint[]) => void` | — | Normalized seekpoints after each fetch. |
+| `height` | `number` | `48` | Canvas height in px. |
+
+Exposes a `ref` handle: `{ refresh() }` to force a seekpoint refetch.
+
+### Pairing it with a video source
+
+`Timeline` is just a seek UI — it has no idea what's playing. You wire it to a video by (a)
+feeding it the current playhead as `currentTimeMs`, and (b) handling `onSeek` to move that
+video. Here it is paired with a `RhombusBufferedPlayer` in VOD mode, using the player's
+[`ref` handle](#rhombusbufferedplayer-specific-props) (`getVideoElement()`) to read and drive
+the underlying `<video>`. Wall-clock maps to the video as `windowStart + video.currentTime`:
+
+```tsx
+import { useEffect, useRef, useState } from "react";
 import {
   RhombusBufferedPlayer,
-  RhombusRealtimePlayer,
-  type RhombusBufferedStreamQuality,
-  type RhombusRealtimeStreamQuality,
+  Timeline,
+  type RhombusBufferedPlayerHandle,
 } from "@rhombussystems/react";
-import { useState } from "react";
 
-export function CameraWithQualityControls() {
-  const [dashQ, setDashQ] = useState<RhombusBufferedStreamQuality>("HIGH");
-  const [rtQ, setRtQ] = useState<RhombusRealtimeStreamQuality>("HD");
+function ScrubbableVod({ cameraUuid }: { cameraUuid: string }) {
+  const player = useRef<RhombusBufferedPlayerHandle>(null);
+  const windowSec = 3600;
+  // Epoch seconds of the VOD manifest window the player currently has loaded.
+  const [windowStartSec, setWindowStartSec] = useState(() => Math.floor(Date.now() / 1000) - windowSec);
+  const [currentMs, setCurrentMs] = useState(windowStartSec * 1000);
+
+  // Drive the playhead from the <video>'s position.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const v = player.current?.getVideoElement();
+      if (v) setCurrentMs(windowStartSec * 1000 + v.currentTime * 1000);
+    }, 250);
+    return () => clearInterval(id);
+  }, [windowStartSec]);
+
+  function handleSeek(ms: number) {
+    const v = player.current?.getVideoElement();
+    const offsetSec = (ms - windowStartSec * 1000) / 1000;
+    if (v && offsetSec >= 0 && offsetSec <= windowSec) {
+      v.currentTime = offsetSec;                  // inside the loaded window — instant
+    } else {
+      setWindowStartSec(Math.floor(ms / 1000));   // outside — load a fresh window at that time
+    }
+    setCurrentMs(ms);
+  }
 
   return (
     <>
-      <label>
-        DASH quality{" "}
-        <select value={dashQ} onChange={e => setDashQ(e.target.value as RhombusBufferedStreamQuality)}>
-          <option value="HIGH">High</option>
-          <option value="MEDIUM">Medium</option>
-          <option value="LOW">Low</option>
-        </select>
-      </label>
-      <RhombusBufferedPlayer cameraUuid="YOUR_CAMERA_UUID" bufferedStreamQuality={dashQ} />
-
-      <label>
-        Realtime{" "}
-        <select value={rtQ} onChange={e => setRtQ(e.target.value as RhombusRealtimeStreamQuality)}>
-          <option value="HD">HD</option>
-          <option value="SD">SD</option>
-        </select>
-      </label>
-      <RhombusRealtimePlayer
-        cameraUuid="YOUR_CAMERA_UUID"
-        connectionMode="wan"
-        realtimeStreamQuality={rtQ}
+      <RhombusBufferedPlayer
+        ref={player}
+        cameraUuid={cameraUuid}
+        apiOverrideBaseUrl="https://your-api.example.com"
+        startTimeSec={windowStartSec}
+        vodDurationSec={windowSec}
+        videoProps={{ controls: false }}
+      />
+      <Timeline
+        cameraUuid={cameraUuid}
+        apiOverrideBaseUrl="https://your-api.example.com"
+        rangeStartMs={windowStartSec * 1000}
+        rangeEndMs={windowStartSec * 1000 + windowSec * 1000}
+        currentTimeMs={currentMs}
+        fetchSeekPoints
+        onSeek={handleSeek}
       />
     </>
   );
 }
 ```
 
-## Optional: `apiOverrideBaseUrl` (backend on another host)
+The same two wires work for **any** video: a plain `<video>` (read/set `video.currentTime`),
+an HLS/DASH player, or a multi-camera wall sharing one playhead. (`RhombusPlayer` does exactly
+this internally — reach for it if you don't want to own the wiring yourself.)
 
-When **set**, both the federated-token request and the media-URIs request use this base:
+---
 
-- `joinUrl(apiOverrideBaseUrl, paths.federatedToken)` (default path `/api/federated-token`)
-- `joinUrl(apiOverrideBaseUrl, paths.mediaUris)` (default path `/api/media-uris`)
+## Authentication & tokens
 
-Use this if your API lives on another origin/port, or you do not use a domain-scoped federated token and need your own backend to forward Rhombus requests (so the browser never talks to Rhombus directly).
+The SDK is built around **short-lived federated session tokens** minted by your backend; your
+Rhombus API key must never reach the browser.
+
+### SDK-managed (recommended)
+
+Omit `federatedSessionToken`. The SDK `POST`s to your token route (default
+`/api/federated-token`) with `{ "durationSec": <tokenDurationSec> }` and **auto-refreshes**
+before expiry (~97% of the effective TTL). Effective TTL = min of your `tokenDurationSec` and
+any server hint in the response (`expiresInSec`, `expiresAtMs`, or `expiresAt`).
+
+- **DASH / buffered:** keeps playing across refreshes (requests read the latest token).
+- **Realtime:** reconnects the socket on each refresh (short blip).
+
+### You-managed
+
+Pass `federatedSessionToken`. The SDK never calls your token endpoint. Rotate by passing a new
+string — DASH picks it up without a teardown; realtime reconnects.
+
+### Two transport topologies
+
+| | `apiOverrideBaseUrl` **omitted** | `apiOverrideBaseUrl` **set** (proxy mode) |
+|---|---|---|
+| Token request | `window.location.origin` + `paths.federatedToken` | `apiOverrideBaseUrl` + `paths.federatedToken` |
+| Media-URI request | **Direct to Rhombus** `api2.rhombussystems.com` | `apiOverrideBaseUrl` + `paths.mediaUris` |
+| Requirement | Token minted with a Rhombus **`domain`** allowing this origin, or the browser call is blocked (CORS / 401) | Your backend proxies `getMediaUris`; browser never talks to Rhombus directly |
+
+Proxy mode is also **required for built-in Save Clip** (see [Save Clip](#save-clip)).
+
+---
+
+## WAN vs LAN
+
+`connectionMode` selects which `getMediaUris` URI to use:
+
+- **`wan`** (default for buffered) — cloud path; works anywhere with internet.
+- **`lan`** — direct-to-device path (`lanLive*` fields, first non-empty entry). The browser
+  must reach the camera/NVR host (routing, firewall, and **HTTPS-vs-HTTP mixed-content** rules
+  apply). Federated auth rides as `x-auth-scheme=federated-token` & `x-auth-ft` query params.
+
+> **v1.0 breaking change:** LAN no longer uses `document.cookie` or `applyLanAuthCookie`, and
+> `setRhombusLanAuthCookie` was removed. LAN now passes federated-token query params on the URL
+> (works from `localhost`). Your Rhombus deployment must accept those params on LAN.
+
+For LAN DASH, `applyBufferedStreamQuality={false}` disables the `_ds` downscale for
+full-resolution LAN.
+
+---
+
+## Stream quality
+
+**Buffered / DASH** — `bufferedStreamQuality`: `"HIGH"` (default) | `"MEDIUM"` | `"LOW"`. Each
+step asks Rhombus to downscale **server-side** via a `_ds` query on segment/manifest URLs.
+Changing it updates URLs **without** re-fetching the manifest or token. `applyBufferedStreamQuality={false}`
+omits `_ds` entirely.
+
+**Realtime** — `realtimeStreamQuality`: `"HD"` (default) | `"SD"`. `SD` rewrites the socket
+path `/ws` → `/wsl`. Changing it **reconnects** the socket (brief blip).
 
 ```tsx
-<RhombusBufferedPlayer
-  cameraUuid="YOUR_CAMERA_UUID"
-  apiOverrideBaseUrl="https://your-api.example.com"
-/>
+const [q, setQ] = useState<RhombusBufferedStreamQuality>("HIGH");
+<RhombusBufferedPlayer cameraUuid="…" bufferedStreamQuality={q} />
 ```
 
-## Props reference
+On `RhombusPlayer`, these are `bufferedStreamQuality` / `realtimeStreamQuality`, and the
+optional `showLiveTypeSwitcher` surfaces them in the bar.
 
-Shared and **RhombusBufferedPlayer**-specific:
-
-| Prop | Role |
-|------|------|
-| `apiOverrideBaseUrl` | Optional. If omitted, token uses same-origin + Rhombus API for media. If set, both requests use this base. |
-| `rhombusApiBaseUrl` | Optional. Rhombus REST base when `apiOverrideBaseUrl` is omitted. Default `https://api2.rhombussystems.com/api`. |
-| `paths.federatedToken` | Default `/api/federated-token`. Override if your route differs. |
-| `paths.mediaUris` | With override: default `/api/media-uris`. Without override: default `/camera/getMediaUris` on Rhombus. |
-| `federatedSessionToken` | If set, skips the token `fetch`; you supply rotation. DASH uses the latest value without teardown; realtime reconnects when the prop changes. |
-| `tokenDurationSec` | Requested token TTL (seconds) for SDK-managed fetch/refresh. Default `86400`. Changing it re-mints without resetting DASH. |
-| `headers` / `getRequestHeaders` | Merged into the **federated-token** request always; into the **media-URIs** request only when `apiOverrideBaseUrl` is set. Not sent to Rhombus in direct mode. |
-| `connectionMode` | **RhombusBufferedPlayer** optional, default `wan`. `wan` → `wanLiveMpdUri`; `lan` → `lanLiveMpdUris` / `lanLiveMpdUri` (first entry). Changing it re-initializes Dash.js. |
-| `startTimeSec` | **RhombusBufferedPlayer** only. Unix epoch seconds. When set, switches to VOD mode using `wanVodMpdUriTemplate` / `lanVodMpdUrisTemplates`. Omit for live. |
-| `vodDurationSec` | **RhombusBufferedPlayer** only. VOD manifest window length in seconds. Default `7200`. Only used when `startTimeSec` is set. |
-| `seekOffsetSec` | **RhombusBufferedPlayer** only. Playback start offset from `startTimeSec` in seconds. Default `0`. Only used when `startTimeSec` is set. |
-| `bufferedStreamQuality` | **RhombusBufferedPlayer** only. `HIGH` \| `MEDIUM` \| `LOW`. Server downscale via `_ds` on DASH requests (WAN and LAN). Default `HIGH`. Updating does not re-fetch the manifest. |
-| `applyBufferedStreamQuality` | **RhombusBufferedPlayer** only. Default `true`. If `false`, `_ds` is not appended. |
-| `maxRetryIntervalMs` | **RhombusBufferedPlayer** only. Ceiling for the auto-recovery retry interval. Default `30000`. Set to `0` to disable. See [Auto-recovery](#auto-recovery--reconnect). |
-| `stallTimeoutMs` | **RhombusBufferedPlayer** only. Stall watchdog timeout in ms. Default `12000`. Set to `0` to disable. See [Auto-recovery](#auto-recovery--reconnect). |
-| `onRecoveryAttempt` | **RhombusBufferedPlayer** only. Called on each retry: `(attempt, error) => void`. Use to render a "reconnecting…" overlay. |
-
-**RhombusRealtimePlayer** also accepts everything above that applies to token/media resolution, plus:
-
-| Prop | Role |
-|------|------|
-| `connectionMode` | `"wan"` or `"lan"` — which `getMediaUris` H.264 URI field to use; both append federated auth query params on the WebSocket. |
-| `realtimeStreamQuality` | `HD` \| `SD`. Default `HD`. `SD` uses `/wsl` instead of `/ws`; changing this prop reconnects the WebSocket. |
-| `maxRetryIntervalMs` | Ceiling for the auto-reconnect retry interval. Default `30000`. Set to `0` to disable. See [Auto-recovery](#auto-recovery--reconnect). |
-| `stallTimeoutMs` | Stall watchdog timeout in ms (no decoded frame ⇒ reconnect). Default `12000`. Set to `0` to disable. See [Auto-recovery](#auto-recovery--reconnect). |
-| `onRecoveryAttempt` | Called on each reconnect: `(attempt, error) => void`. Use to render a "reconnecting…" overlay. |
+---
 
 ## Auto-recovery / reconnect
 
-Both players retry indefinitely with exponential backoff (2s → 4s → 8s → 16s → … capped at `maxRetryIntervalMs`, default 30s). Backoff resets to 2s after roughly 30 seconds of healthy playback. Pass `onRecoveryAttempt` to surface "reconnecting…" UI to the user.
+Both transports retry **indefinitely** with exponential backoff (2s → 4s → 8s → 16s → … capped
+at `maxRetryIntervalMs`, default 30s). Backoff resets to 2s after ~30s of healthy playback.
+Set `maxRetryIntervalMs={0}` to disable; pass `onRecoveryAttempt` to drive "reconnecting…" UI.
 
-**`RhombusBufferedPlayer` (DASH)** rebuilds the dash.js player when:
+**Buffered (DASH)** rebuilds Dash.js when a recoverable error fires, the initial buffer never
+loads within `stallTimeoutMs`, or `currentTime` stops advancing for `stallTimeoutMs` (not
+paused/seeking/ended).
 
-- A recoverable dash.js error fires (manifest load, segment download, etc.).
-- The initial buffer never loads within `stallTimeoutMs` after the manifest attaches.
-- `<video>.currentTime` stops advancing for `stallTimeoutMs` while not paused/seeking/ended (live or VOD).
+**Realtime (WebSocket)** reopens the socket on `onerror`/unexpected `onclose`, if it fails to
+open within ~8s, if no decoded frame arrives within `stallTimeoutMs` (the classic "WAN black
+screen until refresh"), or on a server `reconnect` message.
 
-**`RhombusRealtimePlayer` (H.264 WebSocket)** tears down and reopens the socket when:
-
-- `WebSocket.onerror` or an unexpected `onclose` fires.
-- The socket fails to open within ~8 seconds.
-- No decoded frame arrives within `stallTimeoutMs` after the connection is established.
-- The Rhombus server issues a `reconnect` control message (kept on the existing 10s delay).
-
-Non-OK responses (e.g. **404** on the default token path) log **`[RhombusBufferedPlayer]`** hints in the console with the request URL and how to adjust `paths` / `apiOverrideBaseUrl`, while **`onError`** still receives a concise `Error`.
-
-## Backend routes
-
-### Same-origin token endpoint (typical with direct Rhombus)
-
-Your server should expose **`POST`** (default **`/api/federated-token`**):
-
-- Body: `{ "durationSec": number }` (forward to Rhombus `POST /org/generateFederatedSessionToken` with your API key server-side).
-- Response JSON must include `federatedSessionToken` (string).
-- Optionally include **`expiresInSec`**, **`expiresAtMs`**, or **`expiresAt`** (see [Federated token refresh](#federated-token-refresh-sdk-managed)) so refresh timing matches server-enforced caps.
-- When minting the token, pass Rhombus **`domain`** so the browser may call `api2.rhombussystems.com` for `getMediaUris` ([**Generate federated session token**](https://docs.rhombus.com/#927fe3b3-7e39-4709-9d4e-8d3da95940cd)).
-
-### Override mode (both hops through your server)
-
-Your server exposes two **`POST`** JSON endpoints (paths configurable; defaults **`/api/federated-token`** and **`/api/media-uris`**):
-
-1. **Federated token** — as above.
-2. **Media URIs** — body `{ "cameraUuid": string }`; forward the Rhombus `POST /camera/getMediaUris` JSON. For WAN DASH the response must include **`wanLiveMpdUri`** (live) or **`wanVodMpdUriTemplate`** (VOD). For LAN DASH (`connectionMode="lan"`), the browser needs **`lanLiveMpdUris`** / **`lanLiveMpdUri`** (live) or **`lanVodMpdUrisTemplates`** (VOD) from that same payload—return the upstream object as-is so those fields are present when Rhombus provides them.
-
-The player appends `x-auth-scheme=federated-token` and `x-auth-ft=<token>` to all media segment requests. See the [Rhombus player-example](https://github.com/rhombussystems/player-example) and `ai-context.md`.
-
-Do **not** put Rhombus API keys in frontend headers.
-
-## Developing this package (maintainers)
-
-If you are working in this repository rather than consuming the published package:
-
-```bash
-yarn install
-yarn build
+```tsx
+function CameraWithStatus({ cameraUuid }: { cameraUuid: string }) {
+  const [attempt, setAttempt] = useState(0);
+  const [error, setError] = useState<Error | null>(null);
+  return (
+    <div>
+      {attempt > 0 ? <div role="status">Reconnecting (attempt {attempt})…</div>
+        : error ? <div role="alert">Playback error: {error.message}</div> : null}
+      <RhombusBufferedPlayer
+        cameraUuid={cameraUuid}
+        onReady={() => { setAttempt(0); setError(null); }}
+        onError={setError}
+        onRecoveryAttempt={setAttempt}
+      />
+    </div>
+  );
+}
 ```
 
-Typecheck only: `yarn typecheck`. Publishing: `npm publish --access public` (from a clean `yarn build`).
+---
+
+## Backend contract
+
+### Token endpoint (always required)
+
+`POST` your `paths.federatedToken` route (default `/api/federated-token`):
+
+- **Request:** `{ "durationSec": number }`.
+- **Server:** forward to Rhombus `POST /org/generateFederatedSessionToken` with your
+  **server-side** API key. Include a Rhombus **`domain`** so the browser may call
+  `api2.rhombussystems.com` in direct mode.
+- **Response JSON:** must include `federatedSessionToken`. Optionally `expiresInSec` /
+  `expiresAtMs` / `expiresAt` so refresh timing matches your server-enforced cap.
+
+### Media-URI endpoint (proxy mode only)
+
+Needed when `apiOverrideBaseUrl` is set. `POST` your `paths.mediaUris` route (default
+`/api/media-uris`):
+
+- **Request:** `{ "cameraUuid": string }`.
+- **Server:** forward Rhombus `POST /camera/getMediaUris` and return the JSON **as-is** so the
+  relevant fields survive: `wanLiveMpdUri` / `wanVodMpdUriTemplate` (WAN DASH), `lanLiveMpdUris`
+  / `lanLiveMpdUri` / `lanVodMpdUrisTemplates` (LAN DASH), `wanLiveH264Uri(s)` /
+  `lanLiveH264Uri(s)` (realtime).
+
+A minimal Express proxy:
+
+```js
+app.post("/api/federated-token", async (req, res) => {
+  const r = await fetch("https://api2.rhombussystems.com/api/org/generateFederatedSessionToken", {
+    method: "POST",
+    headers: { "x-auth-apikey": process.env.RHOMBUS_API_TOKEN, "content-type": "application/json" },
+    body: JSON.stringify({ durationSec: req.body.durationSec, domain: ".your-domain.com" }),
+  });
+  res.json(await r.json());
+});
+
+app.post("/api/media-uris", async (req, res) => {
+  const r = await fetch("https://api2.rhombussystems.com/api/camera/getMediaUris", {
+    method: "POST",
+    headers: { "x-auth-apikey": process.env.RHOMBUS_API_TOKEN, "content-type": "application/json" },
+    body: JSON.stringify({ cameraUuid: req.body.cameraUuid }),
+  });
+  res.json(await r.json()); // return upstream as-is
+});
+```
+
+### Footage seekpoints (Timeline, optional)
+
+When `Timeline`/`RhombusPlayer` fetches seekpoints, it `POST`s `paths.footageSeekpoints`
+(proxy default `/api/footage-seekpoints`) with `{ cameraUuid, startTime, duration, includeAnyMotion }`
+(seconds). Forward to Rhombus `POST /camera/getFootageSeekpointsV2` and return the JSON as-is.
+
+### <a id="clip-routes-built-in-save-clip"></a>Clip routes (built-in Save Clip)
+
+Built-in export needs three routes (defaults shown; override via `saveClip.paths`). All are
+**API-key authed server-side** — the federated token is *not* used here:
+
+| Route | Method | Forwards to | Notes |
+|---|---|---|---|
+| `/api/save-clip` | `POST` | `/video/spliceV3` | Forward the SDK's body as-is; return `{ clipUuid }`. |
+| `/api/clip-progress` | `POST` | `/event/getClipWithProgress` | Forward `{ clipUuid }`; return the `{ clip: { status, percentComplete, currentOperation, clipLocation } }`. |
+| `/api/clip-download` | `GET` | media host | `?clipUuid=…&region=…` → stream `/media/metadata/{region}/{clipUuid}.mp4` with the API key. |
+
+The runnable reference proxy (including the clip routes and media-host derivation) lives in
+the example repo's `server/proxy.mjs`.
+
+> **Never** put Rhombus API keys in frontend headers.
+
+---
+
+## Exported API surface
+
+**Components**
+
+- `RhombusPlayer` — unified live/VOD player with controls.
+- `RhombusBufferedPlayer` — DASH live & VOD.
+- `RhombusRealtimePlayer` — realtime H.264 live.
+- `RhombusPlayerControls` — the default control bar (exported for advanced composition).
+- `Timeline` — standalone canvas scrubber.
+
+**Constants** (value **and** type — usable as named members or plain strings)
+
+- `RhombusPlayerControl` — `{ Play, GoLive, Rewind, Speed, Zoom, Snapshot, SaveClip, Timeline, LiveType }`.
+
+**Types**
+
+- Player props: `RhombusPlayerProps`, `RhombusBufferedPlayerProps`, `RhombusRealtimePlayerProps`,
+  `RhombusPlayerBaseProps`, `TimelineProps`.
+- Handles: `RhombusPlayerHandle`, `RhombusBufferedPlayerHandle`, `RhombusRealtimePlayerHandle`,
+  `TimelineHandle`.
+- Unified player: `RhombusPlayerState`, `RhombusPlayerMode`,
+  `RhombusPlayerClassNames`, `RhombusLiveTransport`, `RhombusSnapshotResult`, `RhombusClipRange`,
+  `RhombusClipExportPhase`, `RhombusClipExportStatus`, `RhombusSaveClipConfig`,
+  `RhombusPlayerTimelineConfig`.
+- Timeline: `TimelineMark`, `RhombusFootageSeekPoint`.
+- Quality / mode: `RhombusBufferedStreamQuality`, `RhombusRealtimeStreamQuality`,
+  `RhombusConnectionMode`, `RhombusRealtimeConnectionMode`, `RhombusPlayerPaths`.
+- Misc: `FederatedTokenFetchResult`, `RhombusDashPlayerCallbacks`, `RhombusDashQualityCallbacks`.
+
+**Helpers** (most apps never need these — the components do all of this internally)
+
+| Export | Purpose |
+|---|---|
+| `fetchFederatedSessionToken(url, headers, durationSec, usedDefaultPath)` | Manually fetch a token. |
+| `getFederatedTokenRefreshDelayMs(args)` | Compute the next refresh delay from TTL + hints. |
+| `formatVodMpdUri(template, startTimeSec, durationSec)` | Fill `{START_TIME}`/`{DURATION}` in a VOD template. |
+| `getDefaultRhombusDashSettings()` / `getDefaultRhombusVodDashSettings()` | The Dash.js settings the SDK uses. |
+| `resolveLiveH264WebSocketUrl(options)` | Resolve the authed realtime socket URL yourself. |
+| `startRhombusRealtimeSession(options)` | Drive the WebSocket + WebCodecs decode loop onto your own canvas. |
+| `snapshotCanvasElement(canvas, opts)` / `snapshotVideoElement(video, opts)` | Capture a frame → `RhombusSnapshotResult`. |
+| `chooseVodAnchor`, `isWithinWindow`, `vodOffsetToWallClock`, `wallClockToVodOffset`, `shouldSwitchToLive`, `isAtLiveEdge` | Pure VOD time-math helpers used by the switching logic. |
+| `requestClipSplice(options)` / `fetchClipProgress(options)` / `buildClipDownloadUrl(options)` | Build your own Save Clip flow. |
+
+---
+
+## Browser support
+
+- **`RhombusBufferedPlayer`** (and `RhombusPlayer` in buffered mode): any modern browser with
+  MSE (Dash.js). Broadest support.
+- **`RhombusRealtimePlayer`** (and `RhombusPlayer`'s default live transport): needs **WebCodecs**
+  `VideoDecoder` with H.264 — Chrome, Edge, Safari 16.4+. Firefox H.264 is still limited.
+
+`RhombusPlayer` feature-detects WebCodecs and **auto-falls back** to buffered live; for the
+low-level players, detect yourself:
+
+```tsx
+const supportsRealtime = typeof window !== "undefined" && "VideoDecoder" in window;
+return supportsRealtime
+  ? <RhombusRealtimePlayer cameraUuid={id} connectionMode="wan" />
+  : <RhombusBufferedPlayer cameraUuid={id} />;
+```
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause / fix |
+|---|---|
+| **404 on `/api/federated-token`** | Token route not implemented / wrong path. Implement it or set `paths.federatedToken`. Check the console `[Rhombus…]` hint. |
+| **CORS / 401 / 403 on `getMediaUris`** (direct mode) | Token not minted with a `domain` authorizing this origin. Add `domain` server-side, or set `apiOverrideBaseUrl` to proxy media. |
+| **Save Clip button missing** | Built-in export needs proxy mode — set `apiOverrideBaseUrl`. Without it, use `onClipRangeSelect` and export yourself. |
+| **Clip download 404** | The `/api/clip-download` route can't resolve the media host/region. Verify the route streams `/media/metadata/{region}/{uuid}.mp4` with the API key. |
+| **Realtime shows black, then recovers** | Normal stall-watchdog reconnect. Tune `stallTimeoutMs`; surface `onRecoveryAttempt`. |
+| **Realtime never renders, no errors** | Browser lacks WebCodecs H.264 (e.g. Firefox). Use buffered, or let `RhombusPlayer` fall back. |
+| **LAN won't connect** | Browser can't reach the device host, or mixed content (HTTPS page → HTTP device). Check routing/firewall and protocol. |
+| **VOD / timeline empty for a range** | No recorded footage for that window. Pick a range when the camera was recording. |
+| **Short blip on quality / token change (realtime)** | Expected — realtime reconnects the socket. Buffered changes are seamless. |
+
+---
+
+## Migrating from 1.x → 2.0
+
+2.0 is mostly **additive** — it introduces the unified [`RhombusPlayer`](#rhombusplayer--the-unified-player),
+the standalone [`Timeline`](#timeline--standalone-scrubber), the `RhombusPlayerControl`
+constant, and the snapshot / clip / VOD-time helpers. None of that requires changes to
+existing 1.x code.
+
+The major bump is warranted by **one breaking behavioral change**:
+
+### ⚠️ Breaking: realtime `onReady` now fires on every (re)connect
+
+`RhombusRealtimePlayer`'s `onReady` prop — and the `onReady` option of the exported
+`startRhombusRealtimeSession` helper — used to fire **once per mount** (only the first
+successful WebSocket connection). In 2.0 it fires **every time the socket reaches `OPEN`** —
+the initial connect *and* each successful auto-reconnect (after a stall, network drop, or
+token-refresh reconnect).
+
+This makes it symmetric with `onRecoveryAttempt` (fire on drop → clear on reconnect), but it
+means any `onReady` handler you used for **one-time** setup will now run repeatedly.
+
+**Who is affected:** only code using `RhombusRealtimePlayer` `onReady` (or
+`startRhombusRealtimeSession` `onReady`) to do something that must happen *once*. If you only
+used `onReady` to hide a "connecting…" indicator, **no change is needed** — the extra firings
+are harmless (and arguably better).
+
+**How to migrate** — guard one-time work yourself:
+
+```tsx
+// 1.x — relied on onReady firing exactly once:
+<RhombusRealtimePlayer
+  cameraUuid={id}
+  connectionMode="wan"
+  onReady={runOnceSetup}
+/>
+
+// 2.0 — make the once-only intent explicit; do per-connect work freely:
+function LiveView({ id }: { id: string }) {
+  const didInit = useRef(false);
+  return (
+    <RhombusRealtimePlayer
+      cameraUuid={id}
+      connectionMode="wan"
+      onReady={() => {
+        clearReconnectingBanner();          // fine to run on every (re)connect
+        if (!didInit.current) {
+          didInit.current = true;
+          runOnceSetup();                    // runs only on the first connect
+        }
+      }}
+    />
+  );
+}
+```
+
+> `RhombusBufferedPlayer`'s `onReady` is unchanged (it fires when Dash.js initializes and the
+> manifest loads). This change is realtime-only. If you specifically need the old fire-once
+> realtime behavior and don't want to guard it yourself, open an issue — a one-shot option
+> could be reintroduced.
+
+### Not breaking (no action needed)
+
+- The auth/endpoint/resilience props were consolidated into a shared `RhombusPlayerBaseProps`
+  type, but `RhombusBufferedPlayerProps` / `RhombusRealtimePlayerProps` keep the **same shape**.
+- Both players now accept a `ref` (`forwardRef`) — additive; existing usage is unaffected.
+- `RhombusPlayerPaths` gained an optional `footageSeekpoints` field.
+- `RhombusPlayerControl` is exported as a named constant **and** a string union, so existing
+  string literals keep working.
+
+---
 
 ## License
 

@@ -1,6 +1,6 @@
-import { useEffect, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import type { FederatedTokenFetchResult } from "./rhombusPlayback.js";
-import type { RhombusRealtimePlayerProps } from "./types.js";
+import type { RhombusRealtimePlayerHandle, RhombusRealtimePlayerProps } from "./types.js";
 import {
   DEFAULT_RHOMBUS_API_BASE_URL,
   fetchFederatedSessionToken,
@@ -19,27 +19,34 @@ const DEFAULT_MEDIA_PATH_DIRECT = "/camera/getMediaUris";
 const DEFAULT_REALTIME_MAX_RETRY_INTERVAL_MS = 30_000;
 const DEFAULT_REALTIME_STALL_TIMEOUT_MS = 12_000;
 
-export function RhombusRealtimePlayer({
-  cameraUuid,
-  connectionMode,
-  apiOverrideBaseUrl,
-  rhombusApiBaseUrl,
-  paths,
-  federatedSessionToken,
-  tokenDurationSec = 86_400,
-  realtimeStreamQuality = "HD",
-  headers,
-  getRequestHeaders,
-  maxRetryIntervalMs = DEFAULT_REALTIME_MAX_RETRY_INTERVAL_MS,
-  stallTimeoutMs = DEFAULT_REALTIME_STALL_TIMEOUT_MS,
-  onRecoveryAttempt,
-  canvasProps,
-  className,
-  style,
-  onReady,
-  onError,
-}: RhombusRealtimePlayerProps) {
+export const RhombusRealtimePlayer = forwardRef<
+  RhombusRealtimePlayerHandle,
+  RhombusRealtimePlayerProps
+>(function RhombusRealtimePlayer(
+  {
+    cameraUuid,
+    connectionMode,
+    apiOverrideBaseUrl,
+    rhombusApiBaseUrl,
+    paths,
+    federatedSessionToken,
+    tokenDurationSec = 86_400,
+    realtimeStreamQuality = "HD",
+    headers,
+    getRequestHeaders,
+    maxRetryIntervalMs = DEFAULT_REALTIME_MAX_RETRY_INTERVAL_MS,
+    stallTimeoutMs = DEFAULT_REALTIME_STALL_TIMEOUT_MS,
+    onRecoveryAttempt,
+    canvasProps,
+    className,
+    style,
+    onReady,
+    onError,
+  },
+  ref
+) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  useImperativeHandle(ref, () => ({ getCanvasElement: () => canvasRef.current }), []);
   const onReadyRef = useRef(onReady);
   const onErrorRef = useRef(onError);
   const onRecoveryAttemptRef = useRef(onRecoveryAttempt);
@@ -56,7 +63,6 @@ export function RhombusRealtimePlayer({
 
   const sdkRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const destroySessionRef = useRef<(() => void) | null>(null);
-  const realtimeReadyFiredRef = useRef(false);
   const scheduleSdkTokenRefreshRef = useRef<
     (last: FederatedTokenFetchResult, fetchedAtMs: number, durationUsedSec: number) => void
   >(() => {});
@@ -136,10 +142,7 @@ export function RhombusRealtimePlayer({
             onErrorRef.current?.(err);
           },
           onReady: () => {
-            if (!realtimeReadyFiredRef.current) {
-              realtimeReadyFiredRef.current = true;
-              onReadyRef.current?.();
-            }
+            onReadyRef.current?.();
           },
           onRecoveryAttempt: (attempt, err) => {
             onRecoveryAttemptRef.current?.(attempt, err);
@@ -173,7 +176,6 @@ export function RhombusRealtimePlayer({
     if (!canvas) return;
 
     let effectCancelled = false;
-    realtimeReadyFiredRef.current = false;
 
     const scheduleSdkTokenRefresh = (
       lastResult: FederatedTokenFetchResult,
@@ -228,10 +230,7 @@ export function RhombusRealtimePlayer({
                 onErrorRef.current?.(err);
               },
               onReady: () => {
-                if (!realtimeReadyFiredRef.current) {
-                  realtimeReadyFiredRef.current = true;
-                  onReadyRef.current?.();
-                }
+                onReadyRef.current?.();
               },
               onRecoveryAttempt: (attempt, err) => {
                 onRecoveryAttemptRef.current?.(attempt, err);
@@ -306,8 +305,6 @@ export function RhombusRealtimePlayer({
             onErrorRef.current?.(err);
           },
           onReady: () => {
-            if (realtimeReadyFiredRef.current) return;
-            realtimeReadyFiredRef.current = true;
             onReadyRef.current?.();
           },
           onRecoveryAttempt: (attempt, err) => {
@@ -393,10 +390,7 @@ export function RhombusRealtimePlayer({
             onErrorRef.current?.(err);
           },
           onReady: () => {
-            if (!realtimeReadyFiredRef.current) {
-              realtimeReadyFiredRef.current = true;
-              onReadyRef.current?.();
-            }
+            onReadyRef.current?.();
           },
           onRecoveryAttempt: (attempt, err) => {
             onRecoveryAttemptRef.current?.(attempt, err);
@@ -437,4 +431,4 @@ export function RhombusRealtimePlayer({
       {...canvasProps}
     />
   );
-}
+});

@@ -1,4 +1,10 @@
-import type { CanvasHTMLAttributes, CSSProperties, VideoHTMLAttributes } from "react";
+import type {
+  CanvasHTMLAttributes,
+  CSSProperties,
+  ReactNode,
+  VideoHTMLAttributes,
+} from "react";
+import type { MediaPlayerClass } from "dashjs";
 
 /** Live buffered DASH: server downscale via `_ds` on segment URLs (Rhombus Console `BufferedResolutionQuality`). */
 export type RhombusBufferedStreamQuality = "HIGH" | "MEDIUM" | "LOW";
@@ -21,15 +27,26 @@ export type RhombusPlayerPaths = {
    * When omitted on `RhombusBufferedPlayer`, resolved against `rhombusApiBaseUrl` (default `/camera/getMediaUris`).
    */
   mediaUris?: string;
+  /**
+   * POST path for footage seekpoints (`/camera/getFootageSeekpointsV2`). Used by {@link Timeline} when
+   * `fetchSeekPoints` is enabled. In proxy mode resolved against `apiOverrideBaseUrl` (default
+   * `/api/footage-seekpoints`); in direct Rhombus mode resolved against `rhombusApiBaseUrl`
+   * (default `/camera/getFootageSeekpointsV2`).
+   */
+  footageSeekpoints?: string;
 };
 
-export type RhombusBufferedPlayerProps = {
+/**
+ * Auth, endpoint, and resilience props shared by every Rhombus player
+ * (`RhombusBufferedPlayer`, `RhombusRealtimePlayer`, and the unified `RhombusPlayer`).
+ */
+export type RhombusPlayerBaseProps = {
   /** Camera UUID from Rhombus (safe to use in the browser). */
   cameraUuid: string;
   /**
-   * `wan`: use `wanLiveMpdUri` from `getMediaUris`.
-   * `lan`: use `lanLiveMpdUris` (or `lanLiveMpdUri` if present). First entry wins; same idea as realtime LAN.
-   * Default `wan`. Changing mode re-initializes Dash.js.
+   * `wan`: use the WAN media URIs from `getMediaUris`.
+   * `lan`: use the LAN media URIs (first entry wins). Default `wan`.
+   * Changing mode re-initializes the underlying transport.
    */
   connectionMode?: RhombusConnectionMode;
   /**
@@ -45,21 +62,20 @@ export type RhombusBufferedPlayerProps = {
   apiOverrideBaseUrl?: string;
   /**
    * Rhombus REST API base (no trailing slash required). Default `https://api2.rhombussystems.com/api`.
-   * Only used for the media-URIs request when `apiOverrideBaseUrl` is omitted.
+   * Only used for media requests when `apiOverrideBaseUrl` is omitted.
    */
   rhombusApiBaseUrl?: string;
-  /** Path segments for token and media endpoints. Defaults match player-example or Rhombus paths by mode. */
+  /** Path segments for token, media, and seekpoints endpoints. Defaults match player-example or Rhombus paths by mode. */
   paths?: RhombusPlayerPaths;
   /**
    * When set, this token is used for media requests and the SDK does not call the federated-token endpoint.
-   * Must be non-empty. Updates apply without tearing down Dash.js (segment URLs read the latest token).
-   * You are responsible for minting and refreshing the token; when it changes, realtime WebSocket reconnects.
+   * Must be non-empty. You are responsible for minting and refreshing the token; when it changes the player
+   * re-resolves media with the new token (realtime reconnects; buffered updates segment URLs without remount).
    */
   federatedSessionToken?: string;
   /**
    * Federated token duration in seconds (sent to your token endpoint when the SDK fetches or re-fetches the token).
    * Default: 86400 (24h). Ignored when `federatedSessionToken` is provided.
-   * Changing this re-mints with the new duration without resetting the DASH player (SDK-managed mode only).
    */
   tokenDurationSec?: number;
   /** Static headers for your token endpoint `fetch` (and for media when using `apiOverrideBaseUrl`). */
@@ -69,6 +85,30 @@ export type RhombusBufferedPlayerProps = {
    * request only when `apiOverrideBaseUrl` is set. Not sent to `api2.rhombussystems.com` in direct Rhombus mode.
    */
   getRequestHeaders?: () => HeadersInit | Promise<HeadersInit>;
+  /**
+   * Ceiling for the auto-recovery retry interval in milliseconds. On a recoverable failure the SDK tears the
+   * transport down and rebuilds it with exponential backoff (2s → 4s → 8s → … up to this cap), retrying
+   * indefinitely; after ~30s of healthy playback the backoff resets. Default `30000`. Set to `0` to disable.
+   */
+  maxRetryIntervalMs?: number;
+  /**
+   * Stall watchdog timeout in milliseconds. If no playback progress / decoded frames are observed for this
+   * duration (and the stream is not intentionally paused), the transport is rebuilt. Default `12000`.
+   * Set to `0` to disable the watchdog.
+   */
+  stallTimeoutMs?: number;
+  /**
+   * Called on each auto-recovery attempt so the consumer can show "reconnecting…" UI.
+   * `attempt` is the 1-based consecutive failure count (resets after sustained healthy playback).
+   */
+  onRecoveryAttempt?: (attempt: number, error: Error) => void;
+  className?: string;
+  style?: CSSProperties;
+  /** Called when token fetch, media URI fetch, or transport setup fails. */
+  onError?: (error: Error) => void;
+};
+
+export type RhombusBufferedPlayerProps = RhombusPlayerBaseProps & {
   /**
    * Unix epoch **seconds** for the start of the VOD (historical footage) manifest window.
    * When set, the player uses VOD MPD URI templates (`wanVodMpdUriTemplate` / `lanVodMpdUrisTemplates`)
@@ -109,100 +149,311 @@ export type RhombusBufferedPlayerProps = {
    * use `false` if you want full-resolution LAN only).
    */
   applyBufferedStreamQuality?: boolean;
-  /**
-   * Ceiling for the auto-recovery retry interval in milliseconds. When a recoverable dash.js
-   * error occurs (manifest load failure, segment download, etc.), the SDK destroys the player
-   * and recreates it with exponential backoff: 2s → 4s → 8s → 16s → … up to this cap.
-   * The SDK **never gives up** — it retries indefinitely at this frequency once the cap is reached.
-   * When playback recovers and stays healthy for ~30 seconds, the backoff resets to 2s.
-   *
-   * Default `30000` (30 seconds). Set to `0` to disable auto-recovery entirely (errors will
-   * only fire `onError` without retrying).
-   */
-  maxRetryIntervalMs?: number;
-  /**
-   * Stall watchdog timeout in milliseconds. The SDK polls `<video>.currentTime` once per
-   * second; if no progress is observed for this duration (and the stream is not paused/seeking),
-   * the dash.js instance is destroyed and rebuilt. This catches silent failures that don't
-   * raise a recoverable dash.js error (network drops mid-segment, decoder hang, etc.).
-   *
-   * Also covers the **initial buffer** case: if `BUFFER_LOADED` doesn't fire within this
-   * window after the manifest loads, the player is rebuilt.
-   *
-   * Default `12000` (12 seconds). Set to `0` to disable the watchdog.
-   */
-  stallTimeoutMs?: number;
-  /**
-   * Called on each auto-recovery attempt so the consumer can show "reconnecting…" UI.
-   * `attempt` is the 1-based consecutive failure count (resets after sustained healthy playback).
-   */
-  onRecoveryAttempt?: (attempt: number, error: Error) => void;
-  /** Extra props passed to the underlying `<video>` element. */
+  /** Extra props passed to the underlying `<video>` element. `controls` overrides the SDK default (controls in VOD). */
   videoProps?: VideoHTMLAttributes<HTMLVideoElement>;
-  className?: string;
-  style?: CSSProperties;
   /** Called when playback is ready (Dash.js initialized and manifest loaded). */
   onReady?: () => void;
-  /** Called when token fetch, media URI fetch, or player setup fails. */
-  onError?: (error: Error) => void;
 };
 
 export type RhombusRealtimeConnectionMode = RhombusConnectionMode;
 
-export type RhombusRealtimePlayerProps = {
-  cameraUuid: string;
+export type RhombusRealtimePlayerProps = RhombusPlayerBaseProps & {
   /**
    * `wan`: use `wanLiveH264Uri` / `wanLiveH264Uris` from `getMediaUris`.
    * `lan`: use `lanLiveH264Uri` / `lanLiveH264Uris`.
    * Both modes append `x-auth-scheme=federated-token` and `x-auth-ft` on the WebSocket URL (same as DASH segment auth).
+   *
+   * **Required** on the realtime player (no `wan` default — pick the network explicitly).
    */
   connectionMode: RhombusRealtimeConnectionMode;
-  apiOverrideBaseUrl?: string;
-  rhombusApiBaseUrl?: string;
-  paths?: RhombusPlayerPaths;
-  /**
-   * When set, skips the token `fetch`. Rotate by passing a new string; realtime reconnects, DASH does not remount.
-   */
-  federatedSessionToken?: string;
-  /**
-   * Same as buffered player: SDK-managed token TTL and refresh schedule. Ignored when `federatedSessionToken` is set.
-   */
-  tokenDurationSec?: number;
-  headers?: HeadersInit;
-  getRequestHeaders?: () => HeadersInit | Promise<HeadersInit>;
   /**
    * Realtime WebSocket resolution: `SD` uses the `/wsl` path; `HD` keeps `/ws`.
    * Changing this reconnects the WebSocket. Default `HD`.
    */
   realtimeStreamQuality?: RhombusRealtimeStreamQuality;
-  /**
-   * Ceiling for the auto-reconnect retry interval in milliseconds. When the WebSocket
-   * disconnects, errors, or stalls (no decoded frames within `stallTimeoutMs`), the SDK
-   * tears down the session and reconnects with exponential backoff: 2s → 4s → 8s → 16s
-   * → … up to this cap. The SDK **never gives up** — it retries indefinitely once the
-   * cap is reached. After ~30 seconds of healthy decoded frames, the backoff resets to 2s.
-   *
-   * Default `30000` (30 seconds). Set to `0` to disable auto-reconnect.
-   */
-  maxRetryIntervalMs?: number;
-  /**
-   * Stall watchdog timeout in milliseconds. After the WebSocket connects, the SDK
-   * monitors the `VideoDecoder` output callback; if no decoded frame is observed for
-   * this duration the session is treated as stalled and a reconnect is scheduled.
-   * Catches silent failures: dropped TCP connections that the OS hasn't surfaced yet,
-   * upstream encoder hangs, decoder errors after a partial NAL unit, etc.
-   *
-   * Default `12000` (12 seconds). Set to `0` to disable the watchdog.
-   */
-  stallTimeoutMs?: number;
-  /**
-   * Called on each auto-reconnect attempt so the consumer can show "reconnecting…" UI.
-   * `attempt` is the 1-based consecutive failure count (resets after sustained healthy frames).
-   */
-  onRecoveryAttempt?: (attempt: number, error: Error) => void;
   canvasProps?: CanvasHTMLAttributes<HTMLCanvasElement>;
-  className?: string;
-  style?: CSSProperties;
+  /**
+   * Called every time the realtime WebSocket transitions to `OPEN` — both on the initial
+   * connect and on each successful auto-reconnect. Pair with {@link onRecoveryAttempt} to
+   * clear "reconnecting…" UI when the stream recovers.
+   */
   onReady?: () => void;
-  onError?: (error: Error) => void;
+};
+
+/** Imperative handle exposed by {@link RhombusBufferedPlayer} via `ref`. */
+export type RhombusBufferedPlayerHandle = {
+  /** The underlying `<video>` element, or `null` before mount. */
+  getVideoElement: () => HTMLVideoElement | null;
+  /** The dash.js `MediaPlayerClass` driving playback, or `null` before init / after teardown. */
+  getDashPlayer: () => MediaPlayerClass | null;
+};
+
+/** Imperative handle exposed by {@link RhombusRealtimePlayer} via `ref`. */
+export type RhombusRealtimePlayerHandle = {
+  /** The underlying `<canvas>` element, or `null` before mount. */
+  getCanvasElement: () => HTMLCanvasElement | null;
+};
+
+/* ------------------------------------------------------------------------------------------ *
+ * Unified player (`RhombusPlayer`)
+ * ------------------------------------------------------------------------------------------ */
+
+/** Underlying live transport: low-latency WebCodecs canvas, or buffered DASH `<video>`. */
+export type RhombusLiveTransport = "realtime" | "buffered";
+
+/** Whether the unified player is showing the live edge or past (VOD) footage. */
+export type RhombusPlayerMode = "live" | "vod";
+
+/**
+ * Built-in controls that {@link RhombusPlayer} can render.
+ *
+ * Exported both as a **named constant** (enum-style, refactor-safe) and as a **string union**,
+ * so either call style works:
+ *
+ * ```tsx
+ * controls={["play", "timeline"]}                                    // plain strings
+ * controls={[RhombusPlayerControl.Play, RhombusPlayerControl.Timeline]} // named members
+ * ```
+ *
+ * (A `const` object rather than a TS `enum` so the raw strings stay assignable and there's no
+ * runtime `enum` emit.)
+ */
+export const RhombusPlayerControl = {
+  Play: "play",
+  GoLive: "goLive",
+  Rewind: "rewind",
+  Speed: "speed",
+  Zoom: "zoom",
+  Snapshot: "snapshot",
+  SaveClip: "saveClip",
+  Timeline: "timeline",
+  LiveType: "liveType",
+} as const;
+
+/** A built-in control identifier — see {@link RhombusPlayerControl}. */
+export type RhombusPlayerControl =
+  (typeof RhombusPlayerControl)[keyof typeof RhombusPlayerControl];
+
+/** A captured still frame returned by {@link RhombusPlayerHandle.snapshot}. */
+export type RhombusSnapshotResult = {
+  /** `data:` URL of the captured frame. */
+  dataUrl: string;
+  /** Frame as a `Blob` (may be `null` if `toBlob` is unavailable). */
+  blob: Blob | null;
+  /** Wall-clock time (epoch ms) represented by the frame. */
+  wallClockMs: number;
+  /** Mode the player was in when captured. */
+  mode: RhombusPlayerMode;
+  width: number;
+  height: number;
+};
+
+/** A clip time range selected for export. */
+export type RhombusClipRange = { startMs: number; endMs: number; cameraUuid: string };
+
+/** Lifecycle phase of a built-in clip export. */
+export type RhombusClipExportPhase =
+  | "selecting"
+  | "submitting"
+  | "rendering"
+  | "complete"
+  | "error"
+  | "canceled";
+
+/** Progress/result of a built-in clip export, surfaced via `onClipExport`. */
+export type RhombusClipExportStatus = {
+  phase: RhombusClipExportPhase;
+  clipUuid?: string;
+  /** 0–100 while rendering. */
+  percentComplete?: number;
+  /** Server-reported operation string (e.g. "Processing video"). */
+  currentOperation?: string;
+  /** Resolved download URL once complete. */
+  downloadUrl?: string;
+  error?: string;
+};
+
+/**
+ * Built-in Save Clip configuration. Clip endpoints (`/video/spliceV3` etc.) are **API-key /
+ * session authed, not federated-token compatible**, so built-in export requires proxy mode
+ * (`apiOverrideBaseUrl` set) where your server attaches the API key. Without a proxy, the
+ * player hides the built-in export and only fires `onClipRangeSelect`.
+ */
+export type RhombusSaveClipConfig = {
+  /** Enable built-in export. Default `true` when `apiOverrideBaseUrl` is set, else `false`. */
+  enabled?: boolean;
+  /** Override the proxy paths. Defaults: splice `/api/save-clip`, progress `/api/clip-progress`, download `/api/clip-download`. */
+  paths?: { splice?: string; progress?: string; download?: string };
+  /** Default clip title when the user does not provide one. */
+  defaultTitle?: string;
+  /** Maximum selectable clip duration in seconds. Default `3600` (server caps at 60 min). */
+  maxDurationSec?: number;
+};
+
+/** A drawable region on the {@link Timeline}: an event band or an unavailable-footage gap. */
+export type TimelineMark = {
+  startMs: number;
+  endMs: number;
+  /** `event` draws a colored band; `gap` greys the availability bar. Default `event`. */
+  kind?: "event" | "gap";
+  /** CSS color for the band (events only). */
+  color?: string;
+  label?: string;
+};
+
+/** A footage seekpoint returned by `/camera/getFootageSeekpointsV2` (normalized to ms). */
+export type RhombusFootageSeekPoint = {
+  /** Timestamp in epoch **milliseconds** (the API returns seconds in `ts`). */
+  timestampMs: number;
+  /** Activity enum string (`a`). */
+  activity?: string;
+  /** Whether this seekpoint was alerted on (`al`). */
+  alerted?: boolean;
+  /** Raw server record for advanced consumers. */
+  raw: Record<string, unknown>;
+};
+
+export type TimelineProps = RhombusPlayerBaseProps & {
+  /** Left edge of the visible time window (epoch ms). */
+  rangeStartMs: number;
+  /** Right edge of the visible time window (epoch ms). */
+  rangeEndMs: number;
+  /** Current playhead position (epoch ms); `null`/omitted hides the playhead. */
+  currentTimeMs?: number | null;
+  /** Called with the wall-clock time when the user clicks/drags to seek. */
+  onSeek: (wallClockMs: number) => void;
+  /** Called as the pointer hovers the bar (epoch ms), or `null` when it leaves. */
+  onHoverTimeChange?: (wallClockMs: number | null) => void;
+  /** Fetch event seekpoints for the visible range from `/camera/getFootageSeekpointsV2`. */
+  fetchSeekPoints?: boolean;
+  /** Include generic motion events in the seekpoint fetch (`includeAnyMotion`). */
+  includeAnyMotion?: boolean;
+  /** Static marks to render in addition to (or instead of) fetched seekpoints. */
+  marks?: TimelineMark[];
+  /** Called with normalized seekpoints whenever a fetch completes. */
+  onSeekPointsLoaded?: (points: RhombusFootageSeekPoint[]) => void;
+  /** Pixel height of the canvas. Default `48`. */
+  height?: number;
+};
+
+/** Timeline configuration passed to {@link RhombusPlayer}. */
+export type RhombusPlayerTimelineConfig = {
+  /** How much time the scrubber spans, in seconds. Default `3600` (1 hour up to live). */
+  windowSec?: number;
+  /** Fetch event seekpoints. Default `true`. */
+  fetchSeekPoints?: boolean;
+  includeAnyMotion?: boolean;
+  marks?: TimelineMark[];
+  height?: number;
+};
+
+/**
+ * Per-slot class names for the built-in control bar. Each is appended to the SDK's own
+ * `rhombus-player-*` class on that element, so you can attach utility classes (Tailwind,
+ * CSS-modules, etc.) without fighting the defaults. (The defaults themselves are shipped as a
+ * zero-specificity `:where()` stylesheet, so plain CSS targeting the `rhombus-player-*` classes
+ * also overrides them with no `!important`.)
+ */
+export type RhombusPlayerClassNames = {
+  /** The control bar container (`rhombus-player-controls`). */
+  controls?: string;
+  /** Every button (`rhombus-player-btn`). */
+  button?: string;
+  /** The playback-speed `<select>` (`rhombus-player-speed`). */
+  speed?: string;
+  /** The live-type / quality switcher group (`rhombus-player-livetype`). */
+  liveType?: string;
+  /** The save-clip group (`rhombus-player-clip`). */
+  clip?: string;
+  /** The clip export status text (`rhombus-player-clip-status`). */
+  clipStatus?: string;
+  /** The timeline wrapper (`rhombus-player-timeline`). */
+  timeline?: string;
+};
+
+/** Live, observable state of {@link RhombusPlayer}, passed to `renderControls` and `getState`. */
+export type RhombusPlayerState = {
+  /** The camera being played. */
+  cameraUuid: string;
+  mode: RhombusPlayerMode;
+  /** Resolved transport (realtime may have fallen back to buffered). */
+  liveTransport: RhombusLiveTransport;
+  playing: boolean;
+  playbackRate: number;
+  /** Best-effort current wall-clock (epoch ms); approx `Date.now()` while live. */
+  currentWallClockMs: number | null;
+  zoom: number;
+  isAtLiveEdge: boolean;
+  /** Whether built-in clip export is available (proxy mode + enabled). */
+  canSaveClip: boolean;
+  /** Current clip export status, if one is in progress or finished. */
+  clipExport?: RhombusClipExportStatus;
+};
+
+/** Imperative handle exposed by {@link RhombusPlayer} via `ref`. */
+export type RhombusPlayerHandle = {
+  play: () => void;
+  pause: () => void;
+  goLive: () => void;
+  /** Seek to an absolute wall-clock time (epoch ms); auto-switches live ⇄ vod. */
+  seekTo: (wallClockMs: number) => void;
+  rewind: (seconds?: number) => void;
+  /** Set playback speed (VOD only; ignored while live). */
+  setPlaybackRate: (rate: number) => void;
+  zoomIn: (step?: number) => void;
+  zoomOut: (step?: number) => void;
+  setZoom: (zoom: number, panX?: number, panY?: number) => void;
+  resetZoom: () => void;
+  snapshot: () => Promise<RhombusSnapshotResult>;
+  /** Switch the live transport (realtime ⇄ buffered); clamps to buffered without WebCodecs. */
+  setLiveTransport: (transport: RhombusLiveTransport) => void;
+  /** Start a built-in clip export for the given range (or the currently selected range). */
+  startClipExport: (range?: RhombusClipRange) => Promise<RhombusClipExportStatus>;
+  getState: () => RhombusPlayerState;
+};
+
+export type RhombusPlayerProps = RhombusPlayerBaseProps & {
+  /** Default live transport. Default `realtime` (auto-falls back to `buffered` without WebCodecs). */
+  liveTransport?: RhombusLiveTransport;
+  /** Show the manual Live-type + quality switcher UI (Console-style). Default `false`. */
+  showLiveTypeSwitcher?: boolean;
+  /** Realtime live quality (used when the resolved transport is realtime). */
+  realtimeStreamQuality?: RhombusRealtimeStreamQuality;
+  /** Buffered (DASH) live + VOD quality. */
+  bufferedStreamQuality?: RhombusBufferedStreamQuality;
+  applyBufferedStreamQuality?: boolean;
+  /** Start in live (default) or jump straight into past footage. */
+  initialMode?: RhombusPlayerMode;
+  /** Wall-clock anchor (epoch ms) used when `initialMode === "vod"`. */
+  initialStartTimeMs?: number;
+  /** VOD manifest window length the SDK requests, in seconds. Default `7200`. */
+  vodWindowSec?: number;
+  /** Default rewind step in seconds. Default `15`. */
+  defaultRewindSec?: number;
+  /** A seek within this many seconds of now is treated as live. Default `5`. */
+  liveEdgeToleranceSec?: number;
+  /** Auto-return to live when VOD playback catches up to the live edge. Default `false`. */
+  autoGoLiveAtEdge?: boolean;
+  /** Which built-in controls to render. Omit ⇒ all; `[]` ⇒ headless (drive via `ref`). */
+  controls?: RhombusPlayerControl[];
+  /** Per-slot class names appended to the built-in control bar's elements. */
+  classNames?: RhombusPlayerClassNames;
+  /** Fully replace the control bar while keeping the imperative API. */
+  renderControls?: (api: RhombusPlayerHandle, state: RhombusPlayerState) => ReactNode;
+  /** Built-in Save Clip configuration. */
+  saveClip?: RhombusSaveClipConfig;
+  /** Timeline/scrubber configuration. */
+  timeline?: RhombusPlayerTimelineConfig;
+  /** Called when the first underlying transport becomes ready. */
+  onReady?: () => void;
+  onModeChange?: (mode: RhombusPlayerMode, atWallClockMs: number) => void;
+  onTransportChange?: (transport: RhombusLiveTransport) => void;
+  onSeek?: (wallClockMs: number, mode: RhombusPlayerMode) => void;
+  onPlayingChange?: (playing: boolean) => void;
+  onSnapshot?: (result: RhombusSnapshotResult) => void;
+  onZoomChange?: (zoom: number, panX: number, panY: number) => void;
+  /** Fired whenever the user selects a clip range (regardless of built-in export). */
+  onClipRangeSelect?: (range: RhombusClipRange) => void;
+  /** Built-in clip export progress/result. */
+  onClipExport?: (status: RhombusClipExportStatus) => void;
 };
