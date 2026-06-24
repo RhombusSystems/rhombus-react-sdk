@@ -27,6 +27,8 @@ export type {
   RhombusVideoFit,
   RhombusSnapshotResult,
   RhombusClipRange,
+  RhombusClipVisibility,
+  RhombusClipExportOptions,
   RhombusClipExportPhase,
   RhombusClipExportStatus,
   RhombusSaveClipConfig,

@@ -264,6 +264,23 @@ export type RhombusSnapshotResult = {
 /** A clip time range selected for export. */
 export type RhombusClipRange = { startMs: number; endMs: number; cameraUuid: string };
 
+/** Who can see a saved clip (mirrors Rhombus `ClipVisibility`). */
+export type RhombusClipVisibility = "ORG_WIDE" | "PRIVATE" | "ROLE_RESTRICTED";
+
+/** Options collected for a clip export (sent to `/video/spliceV3`). */
+export type RhombusClipExportOptions = {
+  /** Clip title. Falls back to a timestamp-based default when empty. */
+  title?: string;
+  /** Optional description. */
+  description?: string;
+  /** Who can see the clip. Default `ORG_WIDE`. */
+  visibility?: RhombusClipVisibility;
+  /** Persist to Rhombus Console storage. Default `true`. */
+  saveToConsole?: boolean;
+  /** Include the camera's audio facet. Default `false`. */
+  audioIncluded?: boolean;
+};
+
 /** Lifecycle phase of a built-in clip export. */
 export type RhombusClipExportPhase =
   | "selecting"
@@ -299,8 +316,24 @@ export type RhombusSaveClipConfig = {
   paths?: { splice?: string; progress?: string; download?: string };
   /** Default clip title when the user does not provide one. */
   defaultTitle?: string;
+  /** Width of the selection seeded when the user enters clip mode, in seconds. Default `60`. */
+  defaultDurationSec?: number;
+  /** Minimum selectable clip duration in seconds. Default `5`. */
+  minDurationSec?: number;
   /** Maximum selectable clip duration in seconds. Default `3600` (server caps at 60 min). */
   maxDurationSec?: number;
+  /**
+   * Give up polling clip-render progress after this long (ms) and report an error, so the UI
+   * doesn't poll forever on a stuck render. Default `300000` (5 min). Set to `0` to never time out.
+   */
+  progressTimeoutMs?: number;
+  /** Default visibility for exported clips. Default `ORG_WIDE`. */
+  defaultVisibility?: RhombusClipVisibility;
+  /**
+   * Show the built-in title/description/visibility form when the user clicks "Save clip".
+   * When `false`, "Save clip" exports immediately with defaults. Default `true`.
+   */
+  showOptionsForm?: boolean;
 };
 
 /** A drawable region on the {@link Timeline}: an event band or an unavailable-footage gap. */
@@ -359,6 +392,10 @@ export type TimelineColors = {
   buttonBorder?: string;
   /** ‹/›/−/+ button text/glyph. */
   buttonText?: string;
+  /** Clip-selection shaded region fill. */
+  selection?: string;
+  /** Clip-selection drag handles. */
+  selectionHandle?: string;
 };
 
 export type TimelineProps = RhombusPlayerBaseProps & {
@@ -372,6 +409,14 @@ export type TimelineProps = RhombusPlayerBaseProps & {
   onSeek: (wallClockMs: number) => void;
   /** Called as the pointer hovers the bar (epoch ms), or `null` when it leaves. */
   onHoverTimeChange?: (wallClockMs: number | null) => void;
+  /** Clip selection range (epoch ms). When set, draws draggable handles + a shaded region. */
+  selection?: { startMs: number; endMs: number } | null;
+  /** Called as the user drags the selection handles/body. */
+  onSelectionChange?: (selection: { startMs: number; endMs: number }) => void;
+  /** Minimum selection duration in ms (drag clamp). Default `5000`. */
+  selectionMinDurationMs?: number;
+  /** Maximum selection duration in ms (drag clamp). Default `3600000`. */
+  selectionMaxDurationMs?: number;
   /** When provided, renders ‹/› chevrons that shift the visible window. `-1` = earlier, `1` = later. */
   onShiftWindow?: (direction: -1 | 1) => void;
   /** Enable/disable the back (‹) chevron. Default `true`. */
@@ -459,6 +504,8 @@ export type RhombusPlayerState = {
   isAtLiveEdge: boolean;
   /** Whether built-in clip export is available (proxy mode + enabled). */
   canSaveClip: boolean;
+  /** The current clip selection (when the user is in clip mode), else `null`. */
+  clipSelection: { startMs: number; endMs: number } | null;
   /** Current clip export status, if one is in progress or finished. */
   clipExport?: RhombusClipExportStatus;
 };
@@ -481,7 +528,10 @@ export type RhombusPlayerHandle = {
   /** Switch the live transport (realtime ⇄ buffered); clamps to buffered without WebCodecs. */
   setLiveTransport: (transport: RhombusLiveTransport) => void;
   /** Start a built-in clip export for the given range (or the currently selected range). */
-  startClipExport: (range?: RhombusClipRange) => Promise<RhombusClipExportStatus>;
+  startClipExport: (
+    range?: RhombusClipRange,
+    options?: RhombusClipExportOptions
+  ) => Promise<RhombusClipExportStatus>;
   getState: () => RhombusPlayerState;
 };
 

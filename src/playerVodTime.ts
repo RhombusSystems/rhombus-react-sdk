@@ -73,6 +73,17 @@ export function shouldSwitchToLive(
   return targetMs >= nowMs - toleranceSec * 1000;
 }
 
+/** Format a duration (ms) as `12s` / `1:06` / `1:02:03` (mirrors the Console clip label). */
+export function formatClipDuration(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (total < 60) return `${total}s`;
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return h === 0 ? `${m}:${pad(s)}` : `${h}:${pad(m)}:${pad(s)}`;
+}
+
 /** Whether a given playback wall-clock is effectively at the live edge. `null` ⇒ live. */
 export function isAtLiveEdge(
   wallClockMs: number | null,

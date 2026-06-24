@@ -228,7 +228,7 @@ function Controlled() {
 | `setZoom(zoom, panX?, panY?)` / `resetZoom()` | Set zoom + pan directly / reset to 1×. |
 | `snapshot()` | `Promise<RhombusSnapshotResult>` — capture the current frame. |
 | `setLiveTransport("realtime" \| "buffered")` | Switch transport (clamps to buffered without WebCodecs). |
-| `startClipExport(range?)` | `Promise<RhombusClipExportStatus>` — export a clip (proxy mode). |
+| `startClipExport(range?, options?)` | `Promise<RhombusClipExportStatus>` — export a clip (proxy mode). |
 | `getState()` | Current [`RhombusPlayerState`](#observable-state) snapshot. |
 
 ### Observable state
@@ -246,6 +246,7 @@ type RhombusPlayerState = {
   zoom: number;
   isAtLiveEdge: boolean;
   canSaveClip: boolean;                      // built-in export available (proxy mode)
+  clipSelection: { startMs: number; endMs: number } | null; // current clip selection, or null
   clipExport?: RhombusClipExportStatus;      // in-progress / finished export
 };
 ```
@@ -410,21 +411,32 @@ a.click();
 
 ### Save Clip
 
-Built-in clip export drives Rhombus `/video/spliceV3`, polls render progress, and surfaces a
-download URL.
+The clip flow is **drag-to-select on the timeline**, then export:
 
-> **Proxy mode required.** The clip endpoints are **API-key / session authed, not
+1. **`✂ Create clip`** in the bar enters clip mode — it seeds a selection at the playhead and
+   **zooms the timeline** so it's easy to adjust.
+2. On the timeline you get a shaded region with **draggable start/end handles**, a **draggable
+   body** (move the whole range), and a live **duration** label. The selection clamps to a
+   minimum (default 5s), a maximum (default 60 min — the server cap), and never includes the
+   future.
+3. **`Save clip`** opens a small **title / description / visibility** form (skippable — set
+   `saveClip.showOptionsForm: false`), then runs the export: `/video/spliceV3` → progress
+   polling → a download URL.
+
+`onClipRangeSelect({ startMs, endMs, cameraUuid })` fires as the selection changes, and
+`onClipExport(status)` reports progress/result.
+
+> **Proxy mode required for export.** The clip endpoints are **API-key / session authed, not
 > federated-token compatible**, so the request must go through *your* backend (which attaches
-> the API key) — exactly like the media-URI proxy. Built-in export is only available when
-> `apiOverrideBaseUrl` is set. Without a proxy, the export UI is hidden and the player still
-> fires `onClipRangeSelect` so you can export it yourself. See the
+> the API key) — exactly like the media-URI proxy. Built-in **export** is only available when
+> `apiOverrideBaseUrl` is set; selection + `onClipRangeSelect` work regardless. See the
 > [Backend contract](#clip-routes-built-in-save-clip).
 
 ```tsx
 <RhombusPlayer
   cameraUuid="…"
   apiOverrideBaseUrl="https://your-api.example.com"
-  saveClip={{ defaultTitle: "Incident", maxDurationSec: 600 }}
+  saveClip={{ defaultDurationSec: 30, defaultVisibility: "PRIVATE", showOptionsForm: true }}
   onClipExport={(s) => {
     if (s.phase === "rendering") setProgress(s.percentComplete);
     if (s.phase === "complete") window.location.assign(s.downloadUrl!);
@@ -434,10 +446,23 @@ download URL.
 
 ```ts
 type RhombusSaveClipConfig = {
-  enabled?: boolean;        // default true when apiOverrideBaseUrl is set
+  enabled?: boolean;           // default true when apiOverrideBaseUrl is set
   paths?: { splice?: string; progress?: string; download?: string };
   defaultTitle?: string;
-  maxDurationSec?: number;  // default 3600 (server caps at 60 min)
+  defaultDurationSec?: number; // seeded selection width. Default 60
+  minDurationSec?: number;     // drag clamp. Default 5
+  maxDurationSec?: number;     // drag clamp. Default 3600 (server caps at 60 min)
+  progressTimeoutMs?: number;  // give up polling a stuck render. Default 300000 (5 min); 0 = never
+  defaultVisibility?: RhombusClipVisibility; // "ORG_WIDE" (default) | "PRIVATE" | "ROLE_RESTRICTED"
+  showOptionsForm?: boolean;   // show the title/description/visibility form. Default true
+};
+
+type RhombusClipExportOptions = {
+  title?: string;
+  description?: string;
+  visibility?: RhombusClipVisibility;
+  saveToConsole?: boolean;     // default true
+  audioIncluded?: boolean;     // also splices the camera's .a0 audio facet
 };
 
 type RhombusClipExportStatus = {
@@ -450,7 +475,16 @@ type RhombusClipExportStatus = {
 };
 ```
 
-You can also trigger export imperatively: `await player.current!.startClipExport({ startMs, endMs, cameraUuid })`.
+**Build your own clip UI** instead of the built-in form: read the live selection from
+`onClipRangeSelect` (or `getState().clipSelection`) and call the imperative handle with your own
+options:
+
+```tsx
+await player.current!.startClipExport(
+  { startMs, endMs, cameraUuid },
+  { title: "Front door", visibility: "PRIVATE", audioIncluded: true }
+);
+```
 
 ### Timeline configuration
 
@@ -678,6 +712,9 @@ Accepts the [shared base props](#shared-base-props) (for the seekpoint fetch) pl
 | `currentTimeMs` | `number \| null` | — | Playhead position; omit to hide it. |
 | `onSeek` | `(wallClockMs) => void` | — **(required)** | Click/drag to seek. |
 | `onHoverTimeChange` | `(wallClockMs \| null) => void` | — | Pointer hover time. |
+| `selection` | `{ startMs, endMs } \| null` | — | Clip selection. When set, draws a shaded region + draggable start/end handles + body + duration label. |
+| `onSelectionChange` | `({ startMs, endMs }) => void` | — | Fired as the user drags the selection. |
+| `selectionMinDurationMs` / `selectionMaxDurationMs` | `number` | `5000` / `3600000` | Drag clamps for the selection. |
 | `onShiftWindow` | `(direction: -1 \| 1) => void` | — | When provided, renders ‹/› chevrons that pan the window (`-1` earlier, `1` later). |
 | `canShiftBack` / `canShiftForward` | `boolean` | `true` | Enable/disable the respective chevron at a limit. |
 | `onZoom` | `(zoomIn: boolean, centerWallClockMs: number) => void` | — | When provided, enables −/+ zoom buttons **and mouse-wheel zoom** (centered on the cursor). Range changes animate. |
@@ -722,6 +759,8 @@ object instead (every field optional, merged over the defaults). On `RhombusPlay
       buttonBackground: "#1e293b",     // ‹/›/−/+ buttons
       buttonBorder: "#475569",
       buttonText: "#e2e8f0",
+      selection: "rgba(59,130,246,0.22)", // clip-selection region
+      selectionHandle: "#3b82f6",         // clip-selection drag handles
     },
   }}
 />
@@ -1002,8 +1041,8 @@ the example repo's `server/proxy.mjs`.
   `TimelineHandle`.
 - Unified player: `RhombusPlayerState`, `RhombusPlayerMode`,
   `RhombusPlayerClassNames`, `RhombusLiveTransport`, `RhombusVideoFit`, `RhombusSnapshotResult`, `RhombusClipRange`,
-  `RhombusClipExportPhase`, `RhombusClipExportStatus`, `RhombusSaveClipConfig`,
-  `RhombusPlayerTimelineConfig`.
+  `RhombusClipVisibility`, `RhombusClipExportOptions`, `RhombusClipExportPhase`,
+  `RhombusClipExportStatus`, `RhombusSaveClipConfig`, `RhombusPlayerTimelineConfig`.
 - Timeline: `TimelineMark`, `TimelineColors`, `RhombusFootageSeekPoint`.
 - Quality / mode: `RhombusBufferedStreamQuality`, `RhombusRealtimeStreamQuality`,
   `RhombusConnectionMode`, `RhombusRealtimeConnectionMode`, `RhombusPlayerPaths`.

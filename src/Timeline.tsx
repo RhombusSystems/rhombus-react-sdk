@@ -1,7 +1,12 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { DEFAULT_RHOMBUS_API_BASE_URL, mergeRequestHeaders } from "./rhombusPlayback.js";
+import { formatClipDuration } from "./playerVodTime.js";
 import { appendFederatedAuthQueryParams, joinUrl } from "./urlAuth.js";
 import type { RhombusFootageSeekPoint, TimelineColors, TimelineProps } from "./types.js";
+
+const SELECTION_HANDLE_HIT_PX = 9;
+const DEFAULT_SELECTION_MIN_MS = 5_000;
+const DEFAULT_SELECTION_MAX_MS = 3_600_000;
 
 const DEFAULT_FOOTAGE_PATH_OVERRIDE = "/api/footage-seekpoints";
 const DEFAULT_FOOTAGE_PATH_DIRECT = "/camera/getFootageSeekpointsV2";
@@ -49,6 +54,8 @@ const DEFAULT_COLORS: ResolvedTimelineColors = {
   buttonBackground: "#1e1e1e",
   buttonBorder: "#3a3a3a",
   buttonText: "#eee",
+  selection: "rgba(59,130,246,0.22)",
+  selectionHandle: "#3b82f6",
 };
 
 function resolveColors(colors: TimelineColors | undefined): ResolvedTimelineColors {
@@ -222,6 +229,10 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
     currentTimeMs,
     onSeek,
     onHoverTimeChange,
+    selection,
+    onSelectionChange,
+    selectionMinDurationMs = DEFAULT_SELECTION_MIN_MS,
+    selectionMaxDurationMs = DEFAULT_SELECTION_MAX_MS,
     onShiftWindow,
     canShiftBack = true,
     canShiftForward = true,
@@ -268,6 +279,20 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
   const groupedRef = useRef<GroupedPoints>([]);
   // The currently-drawn (animated) range — lerps toward [rangeStartMs, rangeEndMs].
   const drawRangeRef = useRef({ start: rangeStartMs, end: rangeEndMs });
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+  const onSelectionChangeRef = useRef(onSelectionChange);
+  onSelectionChangeRef.current = onSelectionChange;
+  const selMinRef = useRef(selectionMinDurationMs);
+  selMinRef.current = selectionMinDurationMs;
+  const selMaxRef = useRef(selectionMaxDurationMs);
+  selMaxRef.current = selectionMaxDurationMs;
+  // Active selection drag: which part is grabbed + the move-drag origin.
+  const selDragRef = useRef<{
+    mode: "start" | "end" | "move" | null;
+    originTime: number;
+    originSel: { startMs: number; endMs: number };
+  }>({ mode: null, originTime: 0, originSel: { startMs: 0, endMs: 0 } });
 
   const onSeekRef = useRef(onSeek);
   onSeekRef.current = onSeek;
@@ -456,12 +481,37 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
       ctx.fillStyle = c.playhead;
       ctx.fillRect(Math.round(x) - 1, 0, 2, axisY + barH);
     }
+
+    // Clip selection (shaded region + draggable handles + duration label) — drawn on top.
+    const sel = selectionRef.current;
+    if (sel) {
+      const selH = axisY + barH;
+      const xs = timeToX(sel.startMs);
+      const xe = timeToX(sel.endMs);
+      ctx.fillStyle = c.selection;
+      ctx.fillRect(xs, 0, xe - xs, selH);
+      ctx.fillStyle = c.selectionHandle;
+      ctx.fillRect(Math.round(xs) - 2, 0, 4, selH);
+      ctx.fillRect(Math.round(xe) - 2, 0, 4, selH);
+      // Duration pill centered in the selection.
+      const label = formatClipDuration(sel.endMs - sel.startMs);
+      ctx.font = "11px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      const tw = ctx.measureText(label).width;
+      const cxp = (xs + xe) / 2;
+      ctx.fillStyle = "rgba(0,0,0,0.7)";
+      ctx.fillRect(cxp - tw / 2 - 4, 3, tw + 8, 15);
+      ctx.fillStyle = "#fff";
+      ctx.fillText(label, cxp, 11);
+      ctx.textBaseline = "alphabetic";
+    }
   }, []);
 
   // Redraw on non-range state changes (uses the current animated range).
   useEffect(() => {
     draw();
-  }, [draw, width, height, currentTimeMs, hoverMs, seekpoints, marks, theme]);
+  }, [draw, width, height, currentTimeMs, hoverMs, seekpoints, marks, theme, selection]);
 
   // Animate the drawn range toward the target range whenever the props change.
   useEffect(() => {
@@ -507,6 +557,74 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
       return clampSeek(xToTimeTarget(clientX - rect.left));
     },
     [clampSeek, xToTimeTarget]
+  );
+
+  const localX = useCallback((clientX: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    return clientX - canvas.getBoundingClientRect().left;
+  }, []);
+
+  const timeToXTarget = useCallback(
+    (t: number) => ((t - rangeStartMs) / (rangeEndMs - rangeStartMs)) * width,
+    [rangeStartMs, rangeEndMs, width]
+  );
+
+  // Returns true if the pointer grabbed a selection handle/body (so we should not seek).
+  const beginSelectionDrag = useCallback(
+    (px: number) => {
+      const sel = selectionRef.current;
+      if (!sel || !onSelectionChangeRef.current) return false;
+      const xs = timeToXTarget(sel.startMs);
+      const xe = timeToXTarget(sel.endMs);
+      if (Math.abs(px - xs) <= SELECTION_HANDLE_HIT_PX) {
+        selDragRef.current = { mode: "start", originTime: 0, originSel: sel };
+      } else if (Math.abs(px - xe) <= SELECTION_HANDLE_HIT_PX) {
+        selDragRef.current = { mode: "end", originTime: 0, originSel: sel };
+      } else if (px > xs && px < xe) {
+        selDragRef.current = { mode: "move", originTime: xToTimeTarget(px), originSel: sel };
+      } else {
+        return false;
+      }
+      return true;
+    },
+    [timeToXTarget, xToTimeTarget]
+  );
+
+  const updateSelectionDrag = useCallback(
+    (px: number) => {
+      const drag = selDragRef.current;
+      const sel = selectionRef.current;
+      if (!drag.mode || !sel) return false;
+      const min = selMinRef.current;
+      const max = selMaxRef.current;
+      const lo = rangeStartMs;
+      const hi = Math.min(rangeEndMs, Date.now());
+      const t = Math.max(lo, Math.min(hi, xToTimeTarget(px)));
+      let ns = sel.startMs;
+      let ne = sel.endMs;
+      if (drag.mode === "start") {
+        ns = Math.max(lo, Math.max(sel.endMs - max, Math.min(t, sel.endMs - min)));
+      } else if (drag.mode === "end") {
+        ne = Math.min(hi, Math.min(sel.startMs + max, Math.max(t, sel.startMs + min)));
+      } else {
+        const dur = drag.originSel.endMs - drag.originSel.startMs;
+        const delta = xToTimeTarget(px) - drag.originTime;
+        ns = drag.originSel.startMs + delta;
+        ne = drag.originSel.endMs + delta;
+        if (ns < lo) {
+          ns = lo;
+          ne = lo + dur;
+        }
+        if (ne > hi) {
+          ne = hi;
+          ns = hi - dur;
+        }
+      }
+      onSelectionChangeRef.current?.({ startMs: ns, endMs: ne });
+      return true;
+    },
+    [rangeStartMs, rangeEndMs, xToTimeTarget]
   );
 
   // Mouse-wheel zoom (native listener so we can preventDefault), centered on the cursor.
@@ -574,6 +692,12 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
         ref={canvasWrapRef}
         style={{ position: "relative", flex: "1 1 auto", minWidth: 0, cursor: "pointer", touchAction: "none" }}
         onPointerDown={e => {
+          const px = localX(e.clientX);
+          // Grab a selection handle/body first; only seek if the pointer is elsewhere.
+          if (px != null && beginSelectionDrag(px)) {
+            (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+            return;
+          }
           draggingRef.current = true;
           (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
           const t = pointerTime(e.clientX);
@@ -583,6 +707,11 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
           }
         }}
         onPointerMove={e => {
+          if (selDragRef.current.mode) {
+            const px = localX(e.clientX);
+            if (px != null) updateSelectionDrag(px);
+            return;
+          }
           const t = pointerTime(e.clientX);
           if (t == null) return;
           setHoverMs(t);
@@ -590,13 +719,17 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
           if (draggingRef.current) onSeekRef.current(t);
         }}
         onPointerUp={e => {
+          if (selDragRef.current.mode) {
+            selDragRef.current.mode = null;
+            return;
+          }
           const wasDragging = draggingRef.current;
           draggingRef.current = false;
           const t = pointerTime(e.clientX);
           if (t != null && wasDragging) onSeekRef.current(t);
         }}
         onPointerLeave={() => {
-          if (draggingRef.current) return;
+          if (draggingRef.current || selDragRef.current.mode) return;
           setHoverMs(null);
           onHoverRef.current?.(null);
         }}

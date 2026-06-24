@@ -1,6 +1,9 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { formatClipDuration } from "./playerVodTime.js";
 import type {
   RhombusBufferedStreamQuality,
+  RhombusClipExportOptions,
+  RhombusClipVisibility,
   RhombusConnectionMode,
   RhombusPlayerClassNames,
   RhombusPlayerControl,
@@ -55,6 +58,9 @@ const CONTROLS_CSS = `
 :where(.rhombus-player-clip){display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 12px 8px;background:#111;color:#eee;font:13px system-ui,sans-serif;}
 :where(.rhombus-player-clip-status){opacity:.85;}
 :where(.rhombus-player-clip-link){color:#7ab8ff;}
+:where(.rhombus-player-clip-duration){opacity:.9;font-variant-numeric:tabular-nums;}
+:where(.rhombus-player-clip-form){display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+:where(.rhombus-player-input){border:1px solid #3a3a3a;background:#1e1e1e;color:#eee;border-radius:6px;padding:4px 8px;font:inherit;min-width:140px;}
 @media (max-width:680px){:where(.rhombus-player-controls){display:flex;flex-wrap:wrap;justify-content:center;}}
 `;
 
@@ -86,14 +92,22 @@ type RhombusPlayerControlsProps = {
   onChangeBufferedQuality: (q: RhombusBufferedStreamQuality) => void;
   videoFit: RhombusVideoFit;
   onChangeVideoFit: (fit: RhombusVideoFit) => void;
-  clipRange: { startMs: number | null; endMs: number | null };
-  onSetClipStart: () => void;
-  onSetClipEnd: () => void;
-  onClearClip: () => void;
-  onExportClip: () => void;
+  clipSelection: { startMs: number; endMs: number } | null;
+  showClipOptionsForm: boolean;
+  defaultClipVisibility: RhombusClipVisibility;
+  /** Enter/exit clip mode (seeds/clears the selection). */
+  onToggleClipSelection: () => void;
+  /** Run the export with the collected options. */
+  onExportClip: (options: RhombusClipExportOptions) => void;
   /** The Timeline node (rendered above the button row). */
   children?: ReactNode;
 };
+
+const VISIBILITY_OPTIONS: Array<{ value: RhombusClipVisibility; label: string }> = [
+  { value: "ORG_WIDE", label: "Org-wide" },
+  { value: "PRIVATE", label: "Private" },
+  { value: "ROLE_RESTRICTED", label: "Role-restricted" },
+];
 
 function Btn({
   onClick,
@@ -144,10 +158,10 @@ export function RhombusPlayerControls(props: RhombusPlayerControlsProps) {
     onChangeBufferedQuality,
     videoFit,
     onChangeVideoFit,
-    clipRange,
-    onSetClipStart,
-    onSetClipEnd,
-    onClearClip,
+    clipSelection,
+    showClipOptionsForm,
+    defaultClipVisibility,
+    onToggleClipSelection,
     onExportClip,
     children,
   } = props;
@@ -156,9 +170,39 @@ export function RhombusPlayerControls(props: RhombusPlayerControlsProps) {
     ensureStylesInjected();
   }, []);
 
+  // Save-clip options form (revealed when the user clicks "Save clip" and the form is enabled).
+  const [formOpen, setFormOpen] = useState(false);
+  const [clipTitle, setClipTitle] = useState("");
+  const [clipDescription, setClipDescription] = useState("");
+  const [clipVisibility, setClipVisibility] = useState<RhombusClipVisibility>(defaultClipVisibility);
+  // Reset the form whenever we leave clip mode.
+  useEffect(() => {
+    if (!clipSelection) {
+      setFormOpen(false);
+      setClipTitle("");
+      setClipDescription("");
+      setClipVisibility(defaultClipVisibility);
+    }
+  }, [clipSelection, defaultClipVisibility]);
+
   const show = (c: RhombusPlayerControl) => controls === undefined || controls.includes(c);
   const isLive = state.mode === "live";
   const btnCls = classNames?.button;
+  const clipExporting =
+    state.clipExport?.phase === "submitting" || state.clipExport?.phase === "rendering";
+
+  const runExport = () => {
+    onExportClip({
+      title: clipTitle,
+      description: clipDescription || undefined,
+      visibility: clipVisibility,
+    });
+    setFormOpen(false);
+  };
+  const onSaveClipClick = () => {
+    if (showClipOptionsForm) setFormOpen(true);
+    else runExport();
+  };
 
   if (renderControls) {
     return (
@@ -338,58 +382,91 @@ export function RhombusPlayerControls(props: RhombusPlayerControlsProps) {
       {/* Timeline scrubber sits below the toolbar (Console order). */}
       {children}
 
-      {/* Clip selection — its own row beneath the timeline (mirrors Console's clip toolbar). */}
+      {/* Clip toolbar — its own row beneath the timeline (mirrors Console's clip toolbar).
+          Not in clip mode → "Create clip". In clip mode → duration + Save/Cancel (+ options form). */}
       {show("saveClip") && (
         <div className={cx("rhombus-player-clip", classNames?.clip)}>
-          <Btn className={btnCls} onClick={onSetClipStart} title="Set clip start to current time">
-            ⟦ Start: {fmtClock(clipRange.startMs)}
-          </Btn>
-          <Btn className={btnCls} onClick={onSetClipEnd} title="Set clip end to current time">
-            End: {fmtClock(clipRange.endMs)} ⟧
-          </Btn>
-          {clipRange.startMs != null && clipRange.endMs != null && (
-            <Btn className={btnCls} onClick={onClearClip} title="Clear selection">
-              ✕
+          {!clipSelection ? (
+            <Btn className={btnCls} onClick={onToggleClipSelection} title="Create a clip — drag the handles on the timeline">
+              ✂ Create clip
             </Btn>
-          )}
-          {state.canSaveClip && (
-            <Btn
-              className={btnCls}
-              onClick={onExportClip}
-              disabled={
-                clipRange.startMs == null ||
-                clipRange.endMs == null ||
-                state.clipExport?.phase === "submitting" ||
-                state.clipExport?.phase === "rendering"
-              }
-              title="Export clip"
-            >
-              Save clip
-            </Btn>
-          )}
-          {state.clipExport && (
-            <span className={cx("rhombus-player-clip-status", classNames?.clipStatus)}>
-              {state.clipExport.phase === "rendering"
-                ? `Rendering ${state.clipExport.percentComplete ?? 0}%`
-                : state.clipExport.phase === "complete"
-                  ? "Ready"
-                  : state.clipExport.phase === "error"
-                    ? `Error: ${state.clipExport.error}`
-                    : state.clipExport.phase}
-              {state.clipExport.phase === "complete" && state.clipExport.downloadUrl && (
-                <>
-                  {" "}
-                  <a
-                    className="rhombus-player-clip-link"
-                    href={state.clipExport.downloadUrl}
-                    target="_blank"
-                    rel="noreferrer"
+          ) : (
+            <>
+              <span className="rhombus-player-clip-duration">
+                Duration: {formatClipDuration(clipSelection.endMs - clipSelection.startMs)}
+              </span>
+
+              {formOpen ? (
+                <span className="rhombus-player-clip-form">
+                  <input
+                    className="rhombus-player-input"
+                    placeholder="Title (optional)"
+                    value={clipTitle}
+                    onChange={e => setClipTitle(e.target.value)}
+                  />
+                  <input
+                    className="rhombus-player-input"
+                    placeholder="Description (optional)"
+                    value={clipDescription}
+                    onChange={e => setClipDescription(e.target.value)}
+                  />
+                  <select
+                    className="rhombus-player-quality"
+                    value={clipVisibility}
+                    title="Clip visibility"
+                    onChange={e => setClipVisibility(e.target.value as RhombusClipVisibility)}
                   >
-                    Download
-                  </a>
+                    {VISIBILITY_OPTIONS.map(o => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                  <Btn className={btnCls} onClick={runExport} disabled={clipExporting} title="Create clip">
+                    Create
+                  </Btn>
+                  <Btn className={btnCls} onClick={() => setFormOpen(false)} title="Back">
+                    Back
+                  </Btn>
+                </span>
+              ) : (
+                <>
+                  {state.canSaveClip && (
+                    <Btn className={btnCls} onClick={onSaveClipClick} disabled={clipExporting} title="Save clip">
+                      Save clip
+                    </Btn>
+                  )}
+                  <Btn className={btnCls} onClick={onToggleClipSelection} title="Cancel">
+                    Cancel
+                  </Btn>
                 </>
               )}
-            </span>
+
+              {state.clipExport && (
+                <span className={cx("rhombus-player-clip-status", classNames?.clipStatus)}>
+                  {state.clipExport.phase === "rendering"
+                    ? `Rendering ${state.clipExport.percentComplete ?? 0}%`
+                    : state.clipExport.phase === "complete"
+                      ? "Ready"
+                      : state.clipExport.phase === "error"
+                        ? `Error: ${state.clipExport.error}`
+                        : state.clipExport.phase}
+                  {state.clipExport.phase === "complete" && state.clipExport.downloadUrl && (
+                    <>
+                      {" "}
+                      <a
+                        className="rhombus-player-clip-link"
+                        href={state.clipExport.downloadUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Download
+                      </a>
+                    </>
+                  )}
+                </span>
+              )}
+            </>
           )}
         </div>
       )}

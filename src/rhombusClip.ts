@@ -28,6 +28,12 @@ export type RequestClipSpliceOptions = RhombusClipRequestAuth & {
   /** Clip duration in seconds. */
   durationSec: number;
   title: string;
+  /** Optional description. */
+  description?: string;
+  /** Clip visibility (`ORG_WIDE` | `PRIVATE` | `ROLE_RESTRICTED`). */
+  clipVisibility?: string;
+  /** Include the camera's audio facet (`.a0`). Default `false`. */
+  audioIncluded?: boolean;
   /** Persist the clip to Rhombus Console storage. Default `true`. */
   saveToConsole?: boolean;
 };
@@ -66,13 +72,28 @@ async function postJson<T>(
 export async function requestClipSplice(
   options: RequestClipSpliceOptions
 ): Promise<ClipSpliceResult> {
-  const { url, cameraUuid, startTimeMillis, durationSec, title, saveToConsole = true } = options;
-  const body = {
-    title,
-    // `.v0` is the primary video facet of a camera device (Rhombus device-facet UUID form).
-    deviceUuids: [`${cameraUuid}.v0`],
+  const {
+    url,
+    cameraUuid,
     startTimeMillis,
     durationSec,
+    title,
+    description,
+    clipVisibility,
+    audioIncluded = false,
+    saveToConsole = true,
+  } = options;
+  const deviceUuids = [`${cameraUuid}.v0`];
+  if (audioIncluded) deviceUuids.push(`${cameraUuid}.a0`);
+  const body = {
+    title,
+    description,
+    // `.v0` is the primary video facet; `.a0` the audio facet (Rhombus device-facet UUID form).
+    deviceUuids,
+    startTimeMillis,
+    durationSec,
+    audioIncluded,
+    clipVisibility,
     saveToConsole,
   };
   const data = await postJson<{ clipUuid?: string; clipUuidList?: string[]; errorMsg?: string }>(

@@ -22,6 +22,7 @@ import { chooseVodAnchor, isAtLiveEdge, isWithinWindow, shouldSwitchToLive } fro
 import { joinUrl } from "./urlAuth.js";
 import type {
   RhombusBufferedPlayerHandle,
+  RhombusClipExportOptions,
   RhombusClipExportStatus,
   RhombusClipRange,
   RhombusLiveTransport,
@@ -124,10 +125,8 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
     const [currentWallClockMs, setCurrentWallClockMs] = useState<number | null>(null);
     const [realtimeQuality, setRealtimeQuality] = useState(realtimeQualityProp);
     const [bufferedQuality, setBufferedQuality] = useState(bufferedQualityProp);
-    const [clipRange, setClipRange] = useState<{ startMs: number | null; endMs: number | null }>({
-      startMs: null,
-      endMs: null,
-    });
+    // Clip selection range (epoch ms), or null when not in clip mode.
+    const [clipSelection, setClipSelection] = useState<{ startMs: number; endMs: number } | null>(null);
     const [clipExport, setClipExport] = useState<RhombusClipExportStatus | undefined>(undefined);
     // Timeline window is modeled as center + span (zoom step). `timelineCenterMs === null` ⇒
     // auto-follow (day-center when zoomed out, the playhead when zoomed in). Chevrons pan the
@@ -170,8 +169,8 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
     zoomRef.current = zoom;
     const panRef = useRef(pan);
     panRef.current = pan;
-    const clipRangeRef = useRef(clipRange);
-    clipRangeRef.current = clipRange;
+    const clipSelectionRef = useRef(clipSelection);
+    clipSelectionRef.current = clipSelection;
 
     const cfg = { vodWindowSec, defaultRewindSec, liveEdgeToleranceSec, autoGoLiveAtEdge };
     const cfgRef = useRef(cfg);
@@ -368,15 +367,15 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
     const clipExportCancelRef = useRef(false);
 
     const startClipExport = useCallback(
-      async (range?: RhombusClipRange): Promise<RhombusClipExportStatus> => {
+      async (
+        range?: RhombusClipRange,
+        options?: RhombusClipExportOptions
+      ): Promise<RhombusClipExportStatus> => {
+        const sel = clipSelectionRef.current;
         const r =
           range ??
-          (clipRangeRef.current.startMs != null && clipRangeRef.current.endMs != null
-            ? {
-                startMs: Math.min(clipRangeRef.current.startMs, clipRangeRef.current.endMs),
-                endMs: Math.max(clipRangeRef.current.startMs, clipRangeRef.current.endMs),
-                cameraUuid,
-              }
+          (sel
+            ? { startMs: Math.min(sel.startMs, sel.endMs), endMs: Math.max(sel.startMs, sel.endMs), cameraUuid }
             : null);
         const fail = (error: string): RhombusClipExportStatus => {
           const s: RhombusClipExportStatus = { phase: "error", error };
@@ -411,11 +410,21 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
             cameraUuid,
             startTimeMillis: r.startMs,
             durationSec,
-            title: saveClip?.defaultTitle ?? `Clip ${new Date(r.startMs).toISOString()}`,
+            title:
+              options?.title?.trim() ||
+              saveClip?.defaultTitle ||
+              `Clip ${new Date(r.startMs).toLocaleString()}`,
+            description: options?.description,
+            clipVisibility: options?.visibility ?? saveClip?.defaultVisibility ?? "ORG_WIDE",
+            audioIncluded: options?.audioIncluded,
+            saveToConsole: options?.saveToConsole,
           });
           emit({ phase: "rendering", clipUuid, percentComplete: 0 });
 
-          // poll until complete
+          // poll until complete, or give up after progressTimeoutMs so the UI never hangs.
+          const renderStartedAt = Date.now();
+          const timeoutMs = saveClip?.progressTimeoutMs ?? 300_000;
+          let lastStatus = "INITIATING";
           // eslint-disable-next-line no-constant-condition
           while (true) {
             if (clipExportCancelRef.current) {
@@ -423,7 +432,14 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
               emit(s);
               return s;
             }
+            if (timeoutMs > 0 && Date.now() - renderStartedAt > timeoutMs) {
+              return fail(
+                `Timed out after ${Math.round(timeoutMs / 1000)}s waiting for the clip to render ` +
+                  `(last status: ${lastStatus}). The render may be stuck server-side.`
+              );
+            }
             const progress = await fetchClipProgress({ ...auth, url: progressUrl, clipUuid });
+            lastStatus = progress.status ?? lastStatus;
             if (progress.failed) return fail(progress.currentOperation ?? "Clip render failed");
             if (progress.complete) {
               const url = buildClipDownloadUrl({ url: downloadUrl, clipUuid, region: progress.region });
@@ -454,6 +470,53 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
     useEffect(() => () => {
       clipExportCancelRef.current = true;
     }, []);
+
+    // ---- clip selection (enter/exit clip mode, seeded at the playhead) ----
+    const clipDefaultDurMs = (saveClip?.defaultDurationSec ?? 60) * 1000;
+    const clipMinMs = (saveClip?.minDurationSec ?? 5) * 1000;
+    const clipMaxMs = (saveClip?.maxDurationSec ?? 3600) * 1000;
+
+    const toggleClipSelection = useCallback(() => {
+      if (clipSelectionRef.current) {
+        setClipSelection(null); // exit clip mode
+        setClipExport(undefined);
+        return;
+      }
+      const now = Date.now();
+      const ref = modeRef.current === "live" ? now : computeWallClock() ?? now;
+      const hi = now - 10_000; // never select into the (near) future
+      let end = Math.min(ref + clipDefaultDurMs / 2, hi);
+      let start = end - clipDefaultDurMs;
+      if (start < 0) start = 0;
+      if (end <= start) end = start + clipDefaultDurMs;
+      const next = { startMs: start, endMs: end };
+      // Zoom/center the timeline so the (small) selection is comfortably draggable.
+      const targetSpan = clipDefaultDurMs * 4;
+      let idx = 0;
+      for (let i = ZOOM_STEPS_MS.length - 1; i >= 0; i--) {
+        if (ZOOM_STEPS_MS[i] >= targetSpan) {
+          idx = i;
+          break;
+        }
+      }
+      setTimelineZoomIndex(idx);
+      setTimelineCenterMs((start + end) / 2);
+      setClipSelection(next);
+      setClipExport(undefined);
+      cbRef.current.onClipRangeSelect?.({ ...next, cameraUuid });
+    }, [cameraUuid, clipDefaultDurMs, computeWallClock]);
+
+    const handleSelectionChange = useCallback(
+      (next: { startMs: number; endMs: number }) => {
+        setClipSelection(next);
+        cbRef.current.onClipRangeSelect?.({
+          startMs: Math.min(next.startMs, next.endMs),
+          endMs: Math.max(next.startMs, next.endMs),
+          cameraUuid,
+        });
+      },
+      [cameraUuid]
+    );
 
     // ---- child ready ----
     const handleChildReady = useCallback(() => {
@@ -622,6 +685,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
         zoom,
         isAtLiveEdge: isAtLiveEdge(mode === "live" ? null : wc, Date.now(), liveEdgeToleranceSec),
         canSaveClip: clipEnabled,
+        clipSelection,
         clipExport,
       };
     }, [
@@ -633,6 +697,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
       currentWallClockMs,
       zoom,
       clipEnabled,
+      clipSelection,
       clipExport,
       liveEdgeToleranceSec,
     ]);
@@ -806,25 +871,11 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
             setVideoFit(f);
             cbRef.current.onVideoFitChange?.(f);
           }}
-          clipRange={clipRange}
-          onSetClipStart={() => {
-            const t = computeWallClock();
-            if (t != null) {
-              const next = { ...clipRangeRef.current, startMs: t };
-              setClipRange(next);
-              emitClipRange(next);
-            }
-          }}
-          onSetClipEnd={() => {
-            const t = computeWallClock();
-            if (t != null) {
-              const next = { ...clipRangeRef.current, endMs: t };
-              setClipRange(next);
-              emitClipRange(next);
-            }
-          }}
-          onClearClip={() => setClipRange({ startMs: null, endMs: null })}
-          onExportClip={() => void startClipExport()}
+          clipSelection={clipSelection}
+          showClipOptionsForm={saveClip?.showOptionsForm ?? true}
+          defaultClipVisibility={saveClip?.defaultVisibility ?? "ORG_WIDE"}
+          onToggleClipSelection={toggleClipSelection}
+          onExportClip={options => void startClipExport(undefined, options)}
         >
           {(controls === undefined || controls.includes("timeline")) && (
             <Timeline
@@ -840,6 +891,10 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
               rangeEndMs={tlRangeEndMs}
               currentTimeMs={mode === "live" ? Date.now() : currentWallClockMs}
               onSeek={seekTo}
+              selection={clipSelection}
+              onSelectionChange={handleSelectionChange}
+              selectionMinDurationMs={clipMinMs}
+              selectionMaxDurationMs={clipMaxMs}
               onShiftWindow={shiftTimelineWindow}
               canShiftForward={tlCanShiftForward}
               onZoom={zoomTimeline}
@@ -857,15 +912,5 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
         </RhombusPlayerControls>
       </div>
     );
-
-    function emitClipRange(next: { startMs: number | null; endMs: number | null }) {
-      if (next.startMs != null && next.endMs != null) {
-        cbRef.current.onClipRangeSelect?.({
-          startMs: Math.min(next.startMs, next.endMs),
-          endMs: Math.max(next.startMs, next.endMs),
-          cameraUuid,
-        });
-      }
-    }
   }
 );
