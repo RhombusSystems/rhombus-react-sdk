@@ -60,6 +60,8 @@ const WALLCLOCK_TICK_MS = 250;
 const SEEK_SETTLE_THRESHOLD_MS = 1_500;
 /** Safety cap: stop pinning to the seek target after this long even if the video never reports caught up. */
 const SEEK_SETTLE_MAX_MS = 8_000;
+/** A controlled `positionMs` within this of the current playhead is treated as "no change" (no re-seek). */
+const POSITION_DRIFT_MS = 1_500;
 
 const cx = (...xs: Array<string | undefined | false>) => xs.filter(Boolean).join(" ");
 
@@ -78,6 +80,10 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
       connectionMode = "wan",
       liveTransport: liveTransportProp,
       videoFit: videoFitProp = "auto",
+      playing: playingProp,
+      playbackRate: playbackRateProp,
+      zoom: zoomProp,
+      positionMs: positionMsProp,
       showLiveTypeSwitcher = false,
       realtimeStreamQuality: realtimeQualityProp = "HD",
       bufferedStreamQuality: bufferedQualityProp = "HIGH",
@@ -169,6 +175,10 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
     zoomRef.current = zoom;
     const panRef = useRef(pan);
     panRef.current = pan;
+    const playingRef = useRef(playing);
+    playingRef.current = playing;
+    const playbackRateRef = useRef(playbackRate);
+    playbackRateRef.current = playbackRate;
     const clipSelectionRef = useRef(clipSelection);
     clipSelectionRef.current = clipSelection;
 
@@ -588,6 +598,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
             lastShownWallClockRef.current = wc;
             setCurrentWallClockMs(wc);
           }
+          cbRef.current.onProgress?.(wc, "vod");
           if (cfgRef.current.autoGoLiveAtEdge) {
             if (isAtLiveEdge(wc, Date.now(), cfgRef.current.liveEdgeToleranceSec)) goLive();
           }
@@ -595,6 +606,51 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
       }, WALLCLOCK_TICK_MS);
       return () => clearInterval(id);
     }, [mode, computeWallClock, goLive, getVideo]);
+
+    // ---- progress while live (~1Hz; the VOD ticker handles vod) ----
+    useEffect(() => {
+      if (mode !== "live") return;
+      const id = setInterval(() => cbRef.current.onProgress?.(Date.now(), "live"), 1_000);
+      return () => clearInterval(id);
+    }, [mode]);
+
+    // ---- onPlaybackRateChange (fires for the built-in control, ref, and native ratechange) ----
+    useEffect(() => {
+      cbRef.current.onPlaybackRateChange?.(playbackRate);
+    }, [playbackRate]);
+
+    // ---- controlled props: reconcile internal state to the prop when it is provided + changes ----
+    // (Mirrors the `videoFit` controllable pattern. Each guards against its current effective value
+    //  via a ref so there is no feedback loop with the matching `on*Change` callback.)
+    useEffect(() => {
+      if (playingProp === undefined || playingProp === playingRef.current) return;
+      if (playingProp) play();
+      else pause();
+    }, [playingProp, play, pause]);
+
+    useEffect(() => {
+      if (playbackRateProp === undefined || playbackRateProp === playbackRateRef.current) return;
+      setPlaybackRateImpl(playbackRateProp);
+    }, [playbackRateProp, setPlaybackRateImpl]);
+
+    useEffect(() => {
+      if (zoomProp === undefined || zoomProp === zoomRef.current) return;
+      applyZoom(zoomProp);
+    }, [zoomProp, applyZoom]);
+
+    useEffect(() => {
+      if (liveTransportProp === undefined || liveTransportProp === liveTransportRef.current) return;
+      setLiveTransport(liveTransportProp);
+    }, [liveTransportProp, setLiveTransport]);
+
+    // Controlled playhead: seek when `positionMs` *changes* beyond normal playback drift, so
+    // echoed/progress values don't cause a re-seek loop. Live/VOD is derived by `seekTo`.
+    useEffect(() => {
+      if (positionMsProp === undefined) return;
+      const current = computeWallClock();
+      if (current != null && Math.abs(positionMsProp - current) <= POSITION_DRIFT_MS) return;
+      seekTo(positionMsProp);
+    }, [positionMsProp, computeWallClock, seekTo]);
 
     // ---- measure intrinsic video aspect ratio (only needed for videoFit="auto") ----
     useEffect(() => {

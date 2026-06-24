@@ -17,7 +17,7 @@ Your Rhombus **API key never ships to the browser**. Everything is built around 
 - [Install](#install)
 - [Quick start](#quick-start)
 - [Choosing a component](#choosing-a-component)
-- [`RhombusPlayer` — the unified player](#rhombusplayer--the-unified-player)
+- `[RhombusPlayer` — the unified player](#rhombusplayer--the-unified-player)
   - [How Live ⇄ VOD switching works](#how-live--vod-switching-works)
   - [Props](#rhombusplayer-props)
   - [Imperative handle (`ref`)](#imperative-handle-ref)
@@ -28,9 +28,9 @@ Your Rhombus **API key never ships to the browser**. Everything is built around 
   - [Save Clip](#save-clip)
   - [Timeline configuration](#timeline-configuration)
   - [Recipes](#rhombusplayer-recipes)
-- [`RhombusBufferedPlayer` — DASH live & VOD](#rhombusbufferedplayer--dash-live--vod)
-- [`RhombusRealtimePlayer` — low-latency live](#rhombusrealtimeplayer--low-latency-live)
-- [`Timeline` — standalone scrubber](#timeline--standalone-scrubber)
+- `[RhombusBufferedPlayer` — DASH live & VOD](#rhombusbufferedplayer--dash-live--vod)
+- `[RhombusRealtimePlayer` — low-latency live](#rhombusrealtimeplayer--low-latency-live)
+- `[Timeline` — standalone scrubber](#timeline--standalone-scrubber)
 - [Authentication & tokens](#authentication--tokens)
 - [WAN vs LAN](#wan-vs-lan)
 - [Stream quality](#stream-quality)
@@ -52,9 +52,9 @@ npm install @rhombussystems/react
 ```
 
 - `react` and `react-dom` (**>= 18**) are **peer dependencies** — install them in your app.
-- **`dashjs`** is bundled (used for DASH playback) — you do not install it separately.
+- `**dashjs`** is bundled (used for DASH playback) — you do not install it separately.
 - The realtime/canvas path uses the browser **WebCodecs** `VideoDecoder` (Chrome, Edge,
-  Safari 16.4+; Firefox H.264 is still limited) — no extra dependency.
+Safari 16.4+; Firefox H.264 is still limited) — no extra dependency.
 
 ---
 
@@ -76,32 +76,35 @@ export function CameraView() {
   );
 }
 ```
-<br>
+
+  
+
 
 > ⚠️ **Server setup is required.** The SDK calls *your* origin for a token. Your server must
 > expose `POST /api/federated-token` (the default path) or set `paths.federatedToken` to your
 > route. Built-in **Save Clip** additionally needs a few proxy routes. See the
 > [Backend contract](#backend-contract).
 
-<br>
-Prefer to compose your own layout? Drop down to the individual building blocks — each has a
-deep-dive section further down the page:
+  
+Prefer to compose your own layout? Drop down to the individual building blocks — each has a deep-dive section further down the page:
 
-- [**`RhombusBufferedPlayer`**](#rhombusbufferedplayer--dash-live--vod) — MPEG-DASH live & VOD on a real `<video>` element; native pause/seek, widest browser support.
-- [**`RhombusRealtimePlayer`**](#rhombusrealtimeplayer--low-latency-live) — sub-second live H.264 over WebSocket, decoded with WebCodecs onto a `<canvas>` (live only).
+- `**[RhombusBufferedPlayer](#rhombusbufferedplayer--dash-live--vod)`** — MPEG-DASH live & VOD on a real `<video>` element; native pause/seek, widest browser support.
+- `**[RhombusRealtimePlayer](#rhombusrealtimeplayer--low-latency-live)**` — sub-second live H.264 over WebSocket, decoded with WebCodecs onto a `<canvas>` (live only).
 
 ---
 
 ## Choosing a component
 
-| Component | Transport | Live latency | Live | Past (VOD) | Controls |
-|---|---|---|:--:|:--:|---|
-| **`RhombusPlayer`** | both — realtime canvas for live, DASH for VOD, switched automatically | sub-second live | ✅ | ✅ | ✅ full bar + `ref` API |
-| **`RhombusBufferedPlayer`** | MPEG-DASH (Dash.js) on a `<video>` | ~few seconds | ✅ | ✅ | native `<video>` |
-| **`RhombusRealtimePlayer`** | H.264 / WebSocket → WebCodecs → `<canvas>` | sub-second | ✅ | ❌ | none (always live) |
-| **`Timeline`** | none — a canvas scrubber you pair with any video | — | — | — | seek UI only |
 
-**Rule of thumb:** reach for **`RhombusPlayer`** first — it's the drop-in. Drop down to the
+| Component                   | Transport                                                             | Live latency    | Live | Past (VOD) | Controls               |
+| --------------------------- | --------------------------------------------------------------------- | --------------- | ---- | ---------- | ---------------------- |
+| `**RhombusPlayer**`         | both — realtime canvas for live, DASH for VOD, switched automatically | sub-second live | ✅    | ✅          | ✅ full bar + `ref` API |
+| `**RhombusBufferedPlayer**` | MPEG-DASH (Dash.js) on a `<video>`                                    | ~few seconds    | ✅    | ✅          | native `<video>`       |
+| `**RhombusRealtimePlayer**` | H.264 / WebSocket → WebCodecs → `<canvas>`                            | sub-second      | ✅    | ❌          | none (always live)     |
+| `**Timeline**`              | none — a canvas scrubber you pair with any video                      | —               | —    | —          | seek UI only           |
+
+
+**Rule of thumb:** reach for `**RhombusPlayer`** first — it's the drop-in. Drop down to the
 individual players when you want to compose your own layou or have a single source of truth for your playback time and playback state (ex: video walls).  
 
 ---
@@ -131,9 +134,9 @@ import { RhombusPlayer } from "@rhombussystems/react";
 Switching is a pure function of **time vs. now**:
 
 - **Live** uses the **realtime** transport by default (`RhombusRealtimePlayer`, WebCodecs
-  canvas, sub-second). It auto-falls back to **buffered** DASH when WebCodecs is unavailable.
+canvas, sub-second). It auto-falls back to **buffered** DASH when WebCodecs is unavailable.
 - **Pause, rewind, change speed, or seek into the past** drops the player into **VOD**
-  (`RhombusBufferedPlayer` anchored on a manifest window containing the target time).
+(`RhombusBufferedPlayer` anchored on a manifest window containing the target time).
 - **Go Live** (or seeking within `liveEdgeToleranceSec` of now) returns to the live edge.
 
 Only one transport is mounted at a time, so a switch costs one brief reconnect (no double
@@ -146,49 +149,108 @@ Every prop `RhombusPlayer` accepts. Only `cameraUuid` is required; everything el
 optional. (The auth / endpoint / resilience props are the [shared base props](#shared-base-props)
 common to all players.)
 
-| Prop | Type | Required | Default | Notes |
-|------|------|:--:|---------|-------|
-| `cameraUuid` | `string` | ✅ | — | Camera UUID from Rhombus. Safe in the browser. |
-| `connectionMode` | `"wan" \| "lan"` | — | `"wan"` | Which `getMediaUris` URIs to use. See [WAN vs LAN](#wan-vs-lan). |
-| `apiOverrideBaseUrl` | `string` | — | — | Base for the token **and** media requests (proxy mode). Required for built-in [Save Clip](#save-clip). When omitted, media is fetched directly from Rhombus. |
-| `rhombusApiBaseUrl` | `string` | — | `https://api2.rhombussystems.com/api` | Rhombus REST base when `apiOverrideBaseUrl` is omitted. |
-| `paths` | `{ federatedToken?, mediaUris?, footageSeekpoints? }` | — | see [backend](#backend-contract) | Override route paths. |
-| `federatedSessionToken` | `string` | — | — | Supply & rotate your own token; the SDK skips its token endpoint. |
-| `tokenDurationSec` | `number` | — | `86400` | Requested token TTL (SDK-managed mode). |
-| `headers` | `HeadersInit` | — | — | Static headers for the token request (+ media when `apiOverrideBaseUrl` set). |
-| `getRequestHeaders` | `() => HeadersInit \| Promise<…>` | — | — | Async headers merged after `headers`. |
-| `maxRetryIntervalMs` | `number` | — | `30000` | Auto-recovery backoff ceiling. `0` disables. |
-| `stallTimeoutMs` | `number` | — | `12000` | Stall watchdog. `0` disables. |
-| `liveTransport` | `"realtime" \| "buffered"` | — | `"realtime"` | Live transport. `realtime` auto-falls back to `buffered` without WebCodecs. |
-| `videoFit` | `"contain" \| "cover" \| "fill" \| "auto"` | — | `"auto"` | How the video fills its area (controllable; built-in `"videoFit"` control changes it). See [Video display / fit](#video-display--fit). |
-| `onVideoFitChange` | `(fit) => void` | — | — | Fired when the built-in video-display control changes the fit. |
-| `showLiveTypeSwitcher` | `boolean` | — | `false` | Render the Console-style Realtime/Buffered + quality menu in the bar. |
-| `realtimeStreamQuality` | `"HD" \| "SD"` | — | `"HD"` | Live quality when the resolved transport is realtime. |
-| `bufferedStreamQuality` | `"HIGH" \| "MEDIUM" \| "LOW"` | — | `"HIGH"` | DASH quality for buffered live + VOD. |
-| `applyBufferedStreamQuality` | `boolean` | — | `true` | Set `false` to omit the `_ds` downscale. |
-| `initialMode` | `"live" \| "vod"` | — | `"live"` | Start live or jump straight into the past. |
-| `initialStartTimeMs` | `number` (epoch ms) | — | — | Anchor used when `initialMode="vod"`. |
-| `vodWindowSec` | `number` | — | `7200` | Length of the VOD manifest window the SDK requests. |
-| `defaultRewindSec` | `number` | — | `15` | Step used by the Rewind button / `rewind()`. |
-| `liveEdgeToleranceSec` | `number` | — | `5` | A seek within this many seconds of now counts as live. |
-| `autoGoLiveAtEdge` | `boolean` | — | `false` | Auto-return to live when VOD playback catches up to the edge. |
-| `controls` | `RhombusPlayerControl[]` | — | `undefined` | Which built-in controls to render. Leaving it `undefined` renders every control; `[]` = headless. There is no `"all"` value. See [below](#choosing-which-controls-render). |
-| `classNames` | `RhombusPlayerClassNames` | — | — | Per-slot class names for the bar. See [Styling](#styling-the-controls). |
-| `renderControls` | `(api, state) => ReactNode` | — | — | Replace the bar entirely (timeline still renders). |
-| `saveClip` | `RhombusSaveClipConfig` | — | — | Built-in clip export config. See [Save Clip](#save-clip). |
-| `timeline` | `RhombusPlayerTimelineConfig` | — | — | Timeline/scrubber config. See [Timeline](#timeline-configuration). |
-| `className` / `style` | `string` / `CSSProperties` | — | — | Applied to the player's root element. |
-| `onReady` | `() => void` | — | — | First underlying transport became ready. |
-| `onError` | `(error: Error) => void` | — | — | Token / media / setup failure. |
-| `onRecoveryAttempt` | `(attempt, error) => void` | — | — | Fires on each auto-recovery retry. |
-| `onModeChange` | `(mode, atWallClockMs) => void` | — | — | Fired on every Live ⇄ VOD transition. |
-| `onTransportChange` | `(transport) => void` | — | — | Resolved live transport changed (incl. WebCodecs fallback). |
-| `onSeek` | `(wallClockMs, mode) => void` | — | — | A seek happened. |
-| `onPlayingChange` | `(playing) => void` | — | — | Play/pause state changed. |
-| `onSnapshot` | `(RhombusSnapshotResult) => void` | — | — | A snapshot was captured. |
-| `onZoomChange` | `(zoom, panX, panY) => void` | — | — | Zoom/pan changed. |
-| `onClipRangeSelect` | `(RhombusClipRange) => void` | — | — | User selected a clip range (fires regardless of built-in export). |
-| `onClipExport` | `(RhombusClipExportStatus) => void` | — | — | Built-in clip export progress/result. |
+
+| Prop                         | Type                                                  | Required | Default                               | Notes                                                                                                                                                                      |
+| ---------------------------- | ----------------------------------------------------- | -------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cameraUuid`                 | `string`                                              | ✅        | —                                     | Camera UUID from Rhombus. Safe in the browser.                                                                                                                             |
+| `connectionMode`             | `"wan" | "lan"`                                       | —        | `"wan"`                               | Which `getMediaUris` URIs to use. See [WAN vs LAN](#wan-vs-lan).                                                                                                           |
+| `apiOverrideBaseUrl`         | `string`                                              | —        | —                                     | Base for the token **and** media requests (proxy mode). Required for built-in [Save Clip](#save-clip). When omitted, media is fetched directly from Rhombus.               |
+| `rhombusApiBaseUrl`          | `string`                                              | —        | `https://api2.rhombussystems.com/api` | Rhombus REST base when `apiOverrideBaseUrl` is omitted.                                                                                                                    |
+| `paths`                      | `{ federatedToken?, mediaUris?, footageSeekpoints? }` | —        | see [backend](#backend-contract)      | Override route paths.                                                                                                                                                      |
+| `federatedSessionToken`      | `string`                                              | —        | —                                     | Supply & rotate your own token; the SDK skips its token endpoint.                                                                                                          |
+| `tokenDurationSec`           | `number`                                              | —        | `86400`                               | Requested token TTL (SDK-managed mode).                                                                                                                                    |
+| `headers`                    | `HeadersInit`                                         | —        | —                                     | Static headers for the token request (+ media when `apiOverrideBaseUrl` set).                                                                                              |
+| `getRequestHeaders`          | `() => HeadersInit | Promise<…>`                      | —        | —                                     | Async headers merged after `headers`.                                                                                                                                      |
+| `maxRetryIntervalMs`         | `number`                                              | —        | `30000`                               | Auto-recovery backoff ceiling. `0` disables.                                                                                                                               |
+| `stallTimeoutMs`             | `number`                                              | —        | `12000`                               | Stall watchdog. `0` disables.                                                                                                                                              |
+| `liveTransport`              | `"realtime" | "buffered"`                             | —        | `"realtime"`                          | Live transport. **Controllable**. Auto-falls back to `buffered` without WebCodecs.                                                                                         |
+| `videoFit`                   | `"contain" | "cover" | "fill" | "auto"`               | —        | `"auto"`                              | How the video fills its area. **Controllable**; built-in `"videoFit"` control changes it. See [Video display / fit](#video-display--fit).                                  |
+| `onVideoFitChange`           | `(fit) => void`                                       | —        | —                                     | Fired when the video-display fit changes.                                                                                                                                  |
+| `playing`                    | `boolean`                                             | —        | —                                     | **Controlled** play/pause. Omit = uncontrolled (starts playing). Pair with `onPlayingChange`. See [Controlled vs. imperative](#controlled-uncontrolled--imperative).       |
+| `playbackRate`               | `number`                                              | —        | —                                     | **Controlled** VOD speed (no-op while live). Pair with `onPlaybackRateChange`.                                                                                             |
+| `zoom`                       | `number` (1–4)                                        | —        | —                                     | **Controlled** digital zoom. Pair with `onZoomChange`.                                                                                                                     |
+| `positionMs`                 | `number` (epoch ms)                                   | —        | —                                     | **Controlled playhead** — seeks when its value changes; mode is derived (near now ⇒ live). Mirror `onProgress`/`onSeek` for two-way binding.                               |
+| `showLiveTypeSwitcher`       | `boolean`                                             | —        | `false`                               | Render the Console-style Realtime/Buffered + quality menu in the bar.                                                                                                      |
+| `realtimeStreamQuality`      | `"HD" | "SD"`                                         | —        | `"HD"`                                | Live quality when the resolved transport is realtime.                                                                                                                      |
+| `bufferedStreamQuality`      | `"HIGH" | "MEDIUM" | "LOW"`                           | —        | `"HIGH"`                              | DASH quality for buffered live + VOD.                                                                                                                                      |
+| `applyBufferedStreamQuality` | `boolean`                                             | —        | `true`                                | Set `false` to omit the `_ds` downscale.                                                                                                                                   |
+| `initialMode`                | `"live" | "vod"`                                      | —        | `"live"`                              | Start live or jump straight into the past.                                                                                                                                 |
+| `initialStartTimeMs`         | `number` (epoch ms)                                   | —        | —                                     | Anchor used when `initialMode="vod"`.                                                                                                                                      |
+| `vodWindowSec`               | `number`                                              | —        | `7200`                                | Length of the VOD manifest window the SDK requests.                                                                                                                        |
+| `defaultRewindSec`           | `number`                                              | —        | `15`                                  | Step used by the Rewind button / `rewind()`.                                                                                                                               |
+| `liveEdgeToleranceSec`       | `number`                                              | —        | `5`                                   | A seek within this many seconds of now counts as live.                                                                                                                     |
+| `autoGoLiveAtEdge`           | `boolean`                                             | —        | `false`                               | Auto-return to live when VOD playback catches up to the edge.                                                                                                              |
+| `controls`                   | `RhombusPlayerControl[]`                              | —        | `undefined`                           | Which built-in controls to render. Leaving it `undefined` renders every control; `[]` = headless. There is no `"all"` value. See [below](#choosing-which-controls-render). |
+| `classNames`                 | `RhombusPlayerClassNames`                             | —        | —                                     | Per-slot class names for the bar. See [Styling](#styling-the-controls).                                                                                                    |
+| `renderControls`             | `(api, state) => ReactNode`                           | —        | —                                     | Replace the bar entirely (timeline still renders).                                                                                                                         |
+| `saveClip`                   | `RhombusSaveClipConfig`                               | —        | —                                     | Built-in clip export config. See [Save Clip](#save-clip).                                                                                                                  |
+| `timeline`                   | `RhombusPlayerTimelineConfig`                         | —        | —                                     | Timeline/scrubber config. See [Timeline](#timeline-configuration).                                                                                                         |
+| `className` / `style`        | `string` / `CSSProperties`                            | —        | —                                     | Applied to the player's root element.                                                                                                                                      |
+| `onReady`                    | `() => void`                                          | —        | —                                     | First underlying transport became ready.                                                                                                                                   |
+| `onError`                    | `(error: Error) => void`                              | —        | —                                     | Token / media / setup failure.                                                                                                                                             |
+| `onRecoveryAttempt`          | `(attempt, error) => void`                            | —        | —                                     | Fires on each auto-recovery retry.                                                                                                                                         |
+| `onModeChange`               | `(mode, atWallClockMs) => void`                       | —        | —                                     | Fired on every Live ⇄ VOD transition.                                                                                                                                      |
+| `onTransportChange`          | `(transport) => void`                                 | —        | —                                     | Resolved live transport changed (incl. WebCodecs fallback).                                                                                                                |
+| `onSeek`                     | `(wallClockMs, mode) => void`                         | —        | —                                     | A seek happened.                                                                                                                                                           |
+| `onProgress`                 | `(wallClockMs, mode) => void`                         | —        | —                                     | Throttled playback progress (~4Hz VOD / ~1Hz live). Use to mirror a controlled `positionMs`.                                                                               |
+| `onPlayingChange`            | `(playing) => void`                                   | —        | —                                     | Play/pause state changed.                                                                                                                                                  |
+| `onPlaybackRateChange`       | `(rate) => void`                                      | —        | —                                     | Playback speed changed.                                                                                                                                                    |
+| `onSnapshot`                 | `(RhombusSnapshotResult) => void`                     | —        | —                                     | A snapshot was captured.                                                                                                                                                   |
+| `onZoomChange`               | `(zoom, panX, panY) => void`                          | —        | —                                     | Zoom/pan changed.                                                                                                                                                          |
+| `onClipRangeSelect`          | `(RhombusClipRange) => void`                          | —        | —                                     | User selected a clip range (fires regardless of built-in export).                                                                                                          |
+| `onClipExport`               | `(RhombusClipExportStatus) => void`                   | —        | —                                     | Built-in clip export progress/result.                                                                                                                                      |
+
+
+### Controlled, uncontrolled & imperative
+
+**You don't have to choose one approach.** Props, the `ref`, and the built-in control bar all
+read and write the **same internal state**, so they work together and stay in sync — drive some
+aspects declaratively and others imperatively, or let users click the built-in bar; every path
+fires the matching `on*Change` callback so your state can follow. (The only caveat is the standard
+React one: see "Notes" below.)
+
+1. **Controlled value props** — drive a steady-state value declaratively. Each is *optional*: omit
+  it and the player owns it internally (uncontrolled, seeded by `initial*`/defaults); provide it
+   (and update it from the matching `on*Change`) and it becomes the source of truth. The built-in
+   controls **and** the `ref` still work — in controlled mode they fire `on*Change` so your state
+   updates.
+
+  | Prop            | Callback               |
+  | --------------- | ---------------------- |
+  | `playing`       | `onPlayingChange`      |
+  | `playbackRate`  | `onPlaybackRateChange` |
+  | `zoom`          | `onZoomChange`         |
+  | `liveTransport` | `onTransportChange`    |
+  | `videoFit`      | `onVideoFitChange`     |
+
+2. **Controlled playhead** — `positionMs` (epoch ms). It seeks when its value **changes** (the
+  player derives live vs. VOD: within `liveEdgeToleranceSec` of now ⇒ live in the current
+   transport, else VOD — there is **no** `mode` prop). The player still advances on its own; for a
+   two-way binding, mirror `onProgress` (throttled) and/or `onSeek` back into `positionMs`:
+3. **Imperative actions** — one-shot commands on the `[ref](#imperative-handle-ref)`. Some are just
+  sugar over a declarative prop (use whichever you prefer); two are **strictly imperative** because
+   they return a value / run an async side-effect and have no meaningful "state" to bind:
+
+  | `ref` method                                           | Declarative equivalent                                                                                                                                                                       |
+  | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `play()` / `pause()`                                   | `playing`                                                                                                                                                                                    |
+  | `setPlaybackRate(r)`                                   | `playbackRate`                                                                                                                                                                               |
+  | `zoomIn()` / `zoomOut()` / `setZoom()` / `resetZoom()` | `zoom`                                                                                                                                                                                       |
+  | `setLiveTransport(t)`                                  | `liveTransport`                                                                                                                                                                              |
+  | `seekTo(ms)` / `rewind(s)` / `goLive()`                | `positionMs` (set to the time / `now − s` / `now`)                                                                                                                                           |
+  | `**snapshot()`**                                       | **none — strictly imperative** (returns the captured frame).                                                                                                                                 |
+  | `**startClipExport(range?, opts?)`**                   | **none — strictly imperative** (clip *capture*; runs the async render, returns status). Clip *range selection* is the built-in UI / `onClipRangeSelect`, but the export itself is a command. |
+
+   So: everything that *has a steady-state value* is available as a controlled prop; the only things
+   that are **ref-only** are `**snapshot()`** and `**startClipExport()**` (and you'd typically also
+   reach for `getState()` imperatively).
+
+**Notes (controlled semantics):** when you provide a controlled prop, you own it — if you ignore its
+`on*Change`, the prop and the player can diverge until the next prop change (standard React
+controlled behavior; e.g. the built-in Pause button fires `onPlayingChange(false)`, and if you don't
+update your `playing` state the player re-asserts your prop). `getState()` always returns the
+**effective** values regardless of how you drive it, and the `ref` works in controlled or
+uncontrolled mode.
 
 ### Imperative handle (`ref`)
 
@@ -217,19 +279,21 @@ function Controlled() {
 }
 ```
 
-| Method | Description |
-|--------|-------------|
-| `play()` / `pause()` | Play / pause. Pausing live drops into a frozen VOD frame. |
-| `goLive()` | Return to the live edge (restores the live transport). |
-| `seekTo(wallClockMs)` | Seek to an absolute time (epoch ms); auto-switches Live ⇄ VOD. |
-| `rewind(seconds?)` | Jump back `seconds` (default `defaultRewindSec`). |
-| `setPlaybackRate(rate)` | VOD only; ignored while live. |
-| `zoomIn(step?)` / `zoomOut(step?)` | Digital zoom (1×–4×). |
-| `setZoom(zoom, panX?, panY?)` / `resetZoom()` | Set zoom + pan directly / reset to 1×. |
-| `snapshot()` | `Promise<RhombusSnapshotResult>` — capture the current frame. |
-| `setLiveTransport("realtime" \| "buffered")` | Switch transport (clamps to buffered without WebCodecs). |
-| `startClipExport(range?, options?)` | `Promise<RhombusClipExportStatus>` — export a clip (proxy mode). |
-| `getState()` | Current [`RhombusPlayerState`](#observable-state) snapshot. |
+
+| Method                                        | Description                                                      |
+| --------------------------------------------- | ---------------------------------------------------------------- |
+| `play()` / `pause()`                          | Play / pause. Pausing live drops into a frozen VOD frame.        |
+| `goLive()`                                    | Return to the live edge (restores the live transport).           |
+| `seekTo(wallClockMs)`                         | Seek to an absolute time (epoch ms); auto-switches Live ⇄ VOD.   |
+| `rewind(seconds?)`                            | Jump back `seconds` (default `defaultRewindSec`).                |
+| `setPlaybackRate(rate)`                       | VOD only; ignored while live.                                    |
+| `zoomIn(step?)` / `zoomOut(step?)`            | Digital zoom (1×–4×).                                            |
+| `setZoom(zoom, panX?, panY?)` / `resetZoom()` | Set zoom + pan directly / reset to 1×.                           |
+| `snapshot()`                                  | `Promise<RhombusSnapshotResult>` — capture the current frame.    |
+| `setLiveTransport("realtime" | "buffered")`   | Switch transport (clamps to buffered without WebCodecs).         |
+| `startClipExport(range?, options?)`           | `Promise<RhombusClipExportStatus>` — export a clip (proxy mode). |
+| `getState()`                                  | Current `[RhombusPlayerState](#observable-state)` snapshot.      |
+
 
 ### Observable state
 
@@ -283,12 +347,14 @@ Cameras are usually 16:9; when the player box isn't, you get letter/pillar-boxin
 `videoFit` prop controls how the footage fills its area, mirroring the Rhombus Console
 video-wall "Video Display" options:
 
-| `videoFit` | Console label | Behavior |
-|---|---|---|
-| `"auto"` *(default)* | Auto-Size | The **player box takes the video's aspect ratio** — no bars, no cropping. |
-| `"contain"` | Default Aspect Ratio | Full frame, letter/pillar-boxed (`object-fit: contain`). |
-| `"cover"` | Full View Cropped | Fills the box, crops overflow (`object-fit: cover`). |
-| `"fill"` | Stretch to Fit | Distorts to fill, no cropping (`object-fit: fill`). |
+
+| `videoFit`           | Console label        | Behavior                                                                  |
+| -------------------- | -------------------- | ------------------------------------------------------------------------- |
+| `"auto"` *(default)* | Auto-Size            | The **player box takes the video's aspect ratio** — no bars, no cropping. |
+| `"contain"`          | Default Aspect Ratio | Full frame, letter/pillar-boxed (`object-fit: contain`).                  |
+| `"cover"`            | Full View Cropped    | Fills the box, crops overflow (`object-fit: cover`).                      |
+| `"fill"`             | Stretch to Fit       | Distorts to fill, no cropping (`object-fit: fill`).                       |
+
 
 There's a built-in **video-display control** in the bar (the `"videoFit"` control) so users can
 switch between these live; it fires `onVideoFitChange`. You can also drive it as a controlled
@@ -298,7 +364,7 @@ prop:
 <RhombusPlayer cameraUuid="…" videoFit="cover" onVideoFitChange={setFit} />
 ```
 
-> **`"auto"` sizes by width:** the player measures the video's intrinsic aspect ratio and sets
+> `**"auto"` sizes by width:** the player measures the video's intrinsic aspect ratio and sets
 > the stage's `aspect-ratio` (height is derived), so give the player a width and **don't impose a
 > fixed height** in that mode. The other three modes fill whatever box you give it.
 
@@ -314,16 +380,18 @@ as a **zero-specificity `:where()` stylesheet** injected once at runtime. Becaus
 default selector sits inside `:where()` (specificity `0,0,0`), your CSS **always wins — no
 `!important`, no import, regardless of load order**:
 
-| Element | class |
-|---|---|
-| the bar | `rhombus-player-controls` |
-| every button | `rhombus-player-btn` (active: `[data-active="true"]`; disabled: `:disabled`) |
-| speed `<select>` | `rhombus-player-speed` |
-| quality `<select>` | `rhombus-player-quality` |
-| live-type group | `rhombus-player-livetype` |
-| clip group | `rhombus-player-clip` |
-| clip status text | `rhombus-player-clip-status` |
-| timeline wrapper | `rhombus-player-timeline` |
+
+| Element            | class                                                                        |
+| ------------------ | ---------------------------------------------------------------------------- |
+| the bar            | `rhombus-player-controls`                                                    |
+| every button       | `rhombus-player-btn` (active: `[data-active="true"]`; disabled: `:disabled`) |
+| speed `<select>`   | `rhombus-player-speed`                                                       |
+| quality `<select>` | `rhombus-player-quality`                                                     |
+| live-type group    | `rhombus-player-livetype`                                                    |
+| clip group         | `rhombus-player-clip`                                                        |
+| clip status text   | `rhombus-player-clip-status`                                                 |
+| timeline wrapper   | `rhombus-player-timeline`                                                    |
+
 
 ```css
 .rhombus-player-controls { background: #fff; color: #111; gap: 12px; }
@@ -405,22 +473,22 @@ a.download = `snapshot-${shot.wallClockMs}.png`;
 a.click();
 ```
 
-> The example app simply stores `onSnapshot`'s `dataUrl` in state and shows a thumbnail you can
-> right-click to save. For lower-level use, `snapshotCanvasElement` / `snapshotVideoElement` are
-> exported too.
+> A common pattern is to store `onSnapshot`'s `dataUrl` in state and render a thumbnail
+> (`<img src={dataUrl} />`). For lower-level use, `snapshotCanvasElement` / `snapshotVideoElement`
+> are exported too.
 
 ### Save Clip
 
 The clip flow is **drag-to-select on the timeline**, then export:
 
-1. **`✂ Create clip`** in the bar enters clip mode — it seeds a selection at the playhead and
-   **zooms the timeline** so it's easy to adjust.
+1. `**✂ Create clip`** in the bar enters clip mode — it seeds a selection at the playhead and
+  **zooms the timeline** so it's easy to adjust.
 2. On the timeline you get a shaded region with **draggable start/end handles**, a **draggable
-   body** (move the whole range), and a live **duration** label. The selection clamps to a
+  body** (move the whole range), and a live **duration** label. The selection clamps to a
    minimum (default 5s), a maximum (default 60 min — the server cap), and never includes the
    future.
-3. **`Save clip`** opens a small **title / description / visibility** form (skippable — set
-   `saveClip.showOptionsForm: false`), then runs the export: `/video/spliceV3` → progress
+3. `**Save clip`** opens a small **title / description / visibility** form (skippable — set
+  `saveClip.showOptionsForm: false`), then runs the export: `/video/spliceV3` → progress
    polling → a download URL.
 
 `onClipRangeSelect({ startMs, endMs, cameraUuid })` fires as the selection changes, and
@@ -488,7 +556,7 @@ await player.current!.startClipExport(
 
 ### Timeline configuration
 
-`RhombusPlayer` renders a [`Timeline`](#timeline--standalone-scrubber) when `controls`
+`RhombusPlayer` renders a `[Timeline](#timeline--standalone-scrubber)` when `controls`
 includes `"timeline"` (the default). Configure it with the `timeline` prop:
 
 ```ts
@@ -571,40 +639,44 @@ composing your own layout.
 />
 ```
 
-### <a id="shared-base-props"></a>Shared base props (all players)
+### Shared base props (all players)
 
 These come from `RhombusPlayerBaseProps` and are accepted by **every** player:
 
-| Prop | Type | Default | Notes |
-|------|------|---------|-------|
-| `cameraUuid` | `string` | — **(required)** | Camera UUID from Rhombus. Safe in the browser. |
-| `connectionMode` | `"wan" \| "lan"` | `"wan"`¹ | Which `getMediaUris` URIs to use. See [WAN vs LAN](#wan-vs-lan). |
-| `apiOverrideBaseUrl` | `string` | — | Base for the token **and** media requests. Set for proxy mode. When omitted, media is fetched **directly from Rhombus** (needs a domain-scoped token). |
-| `rhombusApiBaseUrl` | `string` | `https://api2.rhombussystems.com/api` | Rhombus REST base when `apiOverrideBaseUrl` is omitted. |
-| `paths` | `{ federatedToken?, mediaUris?, footageSeekpoints? }` | see [backend](#backend-contract) | Override route paths. |
-| `federatedSessionToken` | `string` | — | Supply & rotate your own token; the SDK skips its token endpoint. |
-| `tokenDurationSec` | `number` | `86400` | Requested token TTL (SDK-managed mode). |
-| `headers` | `HeadersInit` | — | Static headers for the token request (+ media when `apiOverrideBaseUrl` set). |
-| `getRequestHeaders` | `() => HeadersInit \| Promise<…>` | — | Async headers merged after `headers`. |
-| `maxRetryIntervalMs` | `number` | `30000` | Auto-recovery backoff ceiling. `0` disables. |
-| `stallTimeoutMs` | `number` | `12000` | Stall watchdog. `0` disables. |
-| `onRecoveryAttempt` | `(attempt, error) => void` | — | Fires on each retry. |
-| `className` / `style` | `string` / `CSSProperties` | — | Applied to the player element. |
-| `onError` | `(error: Error) => void` | — | Token / media / setup failure. |
+
+| Prop                    | Type                                                  | Default                               | Notes                                                                                                                                                  |
+| ----------------------- | ----------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `cameraUuid`            | `string`                                              | — **(required)**                      | Camera UUID from Rhombus. Safe in the browser.                                                                                                         |
+| `connectionMode`        | `"wan" | "lan"`                                       | `"wan"`¹                              | Which `getMediaUris` URIs to use. See [WAN vs LAN](#wan-vs-lan).                                                                                       |
+| `apiOverrideBaseUrl`    | `string`                                              | —                                     | Base for the token **and** media requests. Set for proxy mode. When omitted, media is fetched **directly from Rhombus** (needs a domain-scoped token). |
+| `rhombusApiBaseUrl`     | `string`                                              | `https://api2.rhombussystems.com/api` | Rhombus REST base when `apiOverrideBaseUrl` is omitted.                                                                                                |
+| `paths`                 | `{ federatedToken?, mediaUris?, footageSeekpoints? }` | see [backend](#backend-contract)      | Override route paths.                                                                                                                                  |
+| `federatedSessionToken` | `string`                                              | —                                     | Supply & rotate your own token; the SDK skips its token endpoint.                                                                                      |
+| `tokenDurationSec`      | `number`                                              | `86400`                               | Requested token TTL (SDK-managed mode).                                                                                                                |
+| `headers`               | `HeadersInit`                                         | —                                     | Static headers for the token request (+ media when `apiOverrideBaseUrl` set).                                                                          |
+| `getRequestHeaders`     | `() => HeadersInit | Promise<…>`                      | —                                     | Async headers merged after `headers`.                                                                                                                  |
+| `maxRetryIntervalMs`    | `number`                                              | `30000`                               | Auto-recovery backoff ceiling. `0` disables.                                                                                                           |
+| `stallTimeoutMs`        | `number`                                              | `12000`                               | Stall watchdog. `0` disables.                                                                                                                          |
+| `onRecoveryAttempt`     | `(attempt, error) => void`                            | —                                     | Fires on each retry.                                                                                                                                   |
+| `className` / `style`   | `string` / `CSSProperties`                            | —                                     | Applied to the player element.                                                                                                                         |
+| `onError`               | `(error: Error) => void`                              | —                                     | Token / media / setup failure.                                                                                                                         |
+
 
 ¹ `connectionMode` is **required** (no default) on `RhombusRealtimePlayer`.
 
 ### `RhombusBufferedPlayer`-specific props
 
-| Prop | Type | Default | Notes |
-|------|------|---------|-------|
-| `startTimeSec` | `number` (Unix **seconds**) | — | **Set to play the past** (VOD). Omit for live. Changing it re-attaches a new manifest. |
-| `vodDurationSec` | `number` | `7200` | VOD window length; how far you can seek before a new manifest is needed. |
-| `seekOffsetSec` | `number` | `0` | Where in the window playback begins. |
-| `bufferedStreamQuality` | `"HIGH" \| "MEDIUM" \| "LOW"` | `"HIGH"` | Server downscale via `_ds`. Updating doesn't re-fetch the manifest. |
-| `applyBufferedStreamQuality` | `boolean` | `true` | `false` omits `_ds` (full resolution). |
-| `videoProps` | `VideoHTMLAttributes` | — | Spread onto the `<video>` (`controls`, `muted`, `onClick`, `style`, …). |
-| `onReady` | `() => void` | — | Dash.js initialized and manifest loaded. |
+
+| Prop                         | Type                        | Default  | Notes                                                                                  |
+| ---------------------------- | --------------------------- | -------- | -------------------------------------------------------------------------------------- |
+| `startTimeSec`               | `number` (Unix **seconds**) | —        | **Set to play the past** (VOD). Omit for live. Changing it re-attaches a new manifest. |
+| `vodDurationSec`             | `number`                    | `7200`   | VOD window length; how far you can seek before a new manifest is needed.               |
+| `seekOffsetSec`              | `number`                    | `0`      | Where in the window playback begins.                                                   |
+| `bufferedStreamQuality`      | `"HIGH" | "MEDIUM" | "LOW"` | `"HIGH"` | Server downscale via `_ds`. Updating doesn't re-fetch the manifest.                    |
+| `applyBufferedStreamQuality` | `boolean`                   | `true`   | `false` omits `_ds` (full resolution).                                                 |
+| `videoProps`                 | `VideoHTMLAttributes`       | —        | Spread onto the `<video>` (`controls`, `muted`, `onClick`, `style`, …).                |
+| `onReady`                    | `() => void`                | —        | Dash.js initialized and manifest loaded.                                               |
+
 
 Exposes a `ref` handle: `{ getVideoElement(), getDashPlayer() }`.
 
@@ -663,16 +735,18 @@ pause, seek, or VOD. Sub-second latency; ideal for a video wall or PTZ control.
 
 Accepts all [shared base props](#shared-base-props), plus:
 
-| Prop | Type | Default | Notes |
-|------|------|---------|-------|
-| `connectionMode` | `"wan" \| "lan"` | — **(required)** | `wan` → `wanLiveH264Uri(s)`; `lan` → `lanLiveH264Uri(s)`. Federated auth is added as query params on the socket URL. |
-| `realtimeStreamQuality` | `"HD" \| "SD"` | `"HD"` | `SD` rewrites `/ws` → `/wsl`. Changing it **reconnects** (brief blip). |
-| `canvasProps` | `CanvasHTMLAttributes` | — | Spread onto the `<canvas>`. |
-| `onReady` | `() => void` | — | Fires on **every** WebSocket `OPEN` (first connect *and* each reconnect). |
+
+| Prop                    | Type                   | Default          | Notes                                                                                                                |
+| ----------------------- | ---------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `connectionMode`        | `"wan" | "lan"`        | — **(required)** | `wan` → `wanLiveH264Uri(s)`; `lan` → `lanLiveH264Uri(s)`. Federated auth is added as query params on the socket URL. |
+| `realtimeStreamQuality` | `"HD" | "SD"`          | `"HD"`           | `SD` rewrites `/ws` → `/wsl`. Changing it **reconnects** (brief blip).                                               |
+| `canvasProps`           | `CanvasHTMLAttributes` | —                | Spread onto the `<canvas>`.                                                                                          |
+| `onReady`               | `() => void`           | —                | Fires on **every** WebSocket `OPEN` (first connect *and* each reconnect).                                            |
+
 
 Exposes a `ref` handle: `{ getCanvasElement() }`.
 
-> **`onReady` and token rotation differ from buffered:** realtime `onReady` fires on every
+> `**onReady` and token rotation differ from buffered:** realtime `onReady` fires on every
 > (re)connect, and because auth is on the socket URL, each token refresh closes/reopens the
 > socket (short blip). The buffered player rotates tokens without a teardown.
 
@@ -706,25 +780,27 @@ import { Timeline } from "@rhombussystems/react";
 
 Accepts the [shared base props](#shared-base-props) (for the seekpoint fetch) plus:
 
-| Prop | Type | Default | Notes |
-|------|------|---------|-------|
-| `rangeStartMs` / `rangeEndMs` | `number` (epoch ms) | — **(required)** | Visible time window. |
-| `currentTimeMs` | `number \| null` | — | Playhead position; omit to hide it. |
-| `onSeek` | `(wallClockMs) => void` | — **(required)** | Click/drag to seek. |
-| `onHoverTimeChange` | `(wallClockMs \| null) => void` | — | Pointer hover time. |
-| `selection` | `{ startMs, endMs } \| null` | — | Clip selection. When set, draws a shaded region + draggable start/end handles + body + duration label. |
-| `onSelectionChange` | `({ startMs, endMs }) => void` | — | Fired as the user drags the selection. |
-| `selectionMinDurationMs` / `selectionMaxDurationMs` | `number` | `5000` / `3600000` | Drag clamps for the selection. |
-| `onShiftWindow` | `(direction: -1 \| 1) => void` | — | When provided, renders ‹/› chevrons that pan the window (`-1` earlier, `1` later). |
-| `canShiftBack` / `canShiftForward` | `boolean` | `true` | Enable/disable the respective chevron at a limit. |
-| `onZoom` | `(zoomIn: boolean, centerWallClockMs: number) => void` | — | When provided, enables −/+ zoom buttons **and mouse-wheel zoom** (centered on the cursor). Range changes animate. |
-| `canZoomIn` / `canZoomOut` | `boolean` | `true` | Enable/disable the respective zoom button at a limit. |
-| `fetchSeekPoints` | `boolean` | `false` | Fetch event markers for the range. Rendered as clustered colored dashes grouped by activity type. |
-| `includeAnyMotion` | `boolean` | `true` | Include generic motion in the fetch. |
-| `marks` | `TimelineMark[]` | — | Static event bands (`kind:"event"`) / gaps (`kind:"gap"`). |
-| `onSeekPointsLoaded` | `(RhombusFootageSeekPoint[]) => void` | — | Normalized seekpoints after each fetch (handy for diagnostics). |
-| `colors` | `TimelineColors` | — | Override the canvas-drawn colors (see [Theming the timeline](#theming-the-timeline)). |
-| `height` | `number` | `56` | Canvas height in px. |
+
+| Prop                                                | Type                                                   | Default            | Notes                                                                                                             |
+| --------------------------------------------------- | ------------------------------------------------------ | ------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `rangeStartMs` / `rangeEndMs`                       | `number` (epoch ms)                                    | — **(required)**   | Visible time window.                                                                                              |
+| `currentTimeMs`                                     | `number | null`                                        | —                  | Playhead position; omit to hide it.                                                                               |
+| `onSeek`                                            | `(wallClockMs) => void`                                | — **(required)**   | Click/drag to seek.                                                                                               |
+| `onHoverTimeChange`                                 | `(wallClockMs | null) => void`                         | —                  | Pointer hover time.                                                                                               |
+| `selection`                                         | `{ startMs, endMs } | null`                            | —                  | Clip selection. When set, draws a shaded region + draggable start/end handles + body + duration label.            |
+| `onSelectionChange`                                 | `({ startMs, endMs }) => void`                         | —                  | Fired as the user drags the selection.                                                                            |
+| `selectionMinDurationMs` / `selectionMaxDurationMs` | `number`                                               | `5000` / `3600000` | Drag clamps for the selection.                                                                                    |
+| `onShiftWindow`                                     | `(direction: -1 | 1) => void`                          | —                  | When provided, renders ‹/› chevrons that pan the window (`-1` earlier, `1` later).                                |
+| `canShiftBack` / `canShiftForward`                  | `boolean`                                              | `true`             | Enable/disable the respective chevron at a limit.                                                                 |
+| `onZoom`                                            | `(zoomIn: boolean, centerWallClockMs: number) => void` | —                  | When provided, enables −/+ zoom buttons **and mouse-wheel zoom** (centered on the cursor). Range changes animate. |
+| `canZoomIn` / `canZoomOut`                          | `boolean`                                              | `true`             | Enable/disable the respective zoom button at a limit.                                                             |
+| `fetchSeekPoints`                                   | `boolean`                                              | `false`            | Fetch event markers for the range. Rendered as clustered colored dashes grouped by activity type.                 |
+| `includeAnyMotion`                                  | `boolean`                                              | `true`             | Include generic motion in the fetch.                                                                              |
+| `marks`                                             | `TimelineMark[]`                                       | —                  | Static event bands (`kind:"event"`) / gaps (`kind:"gap"`).                                                        |
+| `onSeekPointsLoaded`                                | `(RhombusFootageSeekPoint[]) => void`                  | —                  | Normalized seekpoints after each fetch (handy for diagnostics).                                                   |
+| `colors`                                            | `TimelineColors`                                       | —                  | Override the canvas-drawn colors (see [Theming the timeline](#theming-the-timeline)).                             |
+| `height`                                            | `number`                                               | `56`               | Canvas height in px.                                                                                              |
+
 
 `Timeline` also draws a **time axis with auto-spaced tick labels** (interval chosen for ~6
 divisions, `h a` / `h:mm a` format), an availability bar, a playhead, and a hover line.
@@ -776,7 +852,7 @@ object instead (every field optional, merged over the defaults). On `RhombusPlay
 `Timeline` is just a seek UI — it has no idea what's playing. You wire it to a video by (a)
 feeding it the current playhead as `currentTimeMs`, and (b) handling `onSeek` to move that
 video. Here it is paired with a `RhombusBufferedPlayer` in VOD mode, using the player's
-[`ref` handle](#rhombusbufferedplayer-specific-props) (`getVideoElement()`) to read and drive
+`[ref` handle](#rhombusbufferedplayer-specific-props) (`getVideoElement()`) to read and drive
 the underlying `<video>`. Wall-clock maps to the video as `windowStart + video.currentTime`:
 
 ```tsx
@@ -866,11 +942,13 @@ string — DASH picks it up without a teardown; realtime reconnects.
 
 ### Two transport topologies
 
-| | `apiOverrideBaseUrl` **omitted** | `apiOverrideBaseUrl` **set** (proxy mode) |
-|---|---|---|
-| Token request | `window.location.origin` + `paths.federatedToken` | `apiOverrideBaseUrl` + `paths.federatedToken` |
-| Media-URI request | **Direct to Rhombus** `api2.rhombussystems.com` | `apiOverrideBaseUrl` + `paths.mediaUris` |
-| Requirement | Token minted with a Rhombus **`domain`** allowing this origin, or the browser call is blocked (CORS / 401) | Your backend proxies `getMediaUris`; browser never talks to Rhombus directly |
+
+|                   | `apiOverrideBaseUrl` **omitted**                                                                           | `apiOverrideBaseUrl` **set** (proxy mode)                                    |
+| ----------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Token request     | `window.location.origin` + `paths.federatedToken`                                                          | `apiOverrideBaseUrl` + `paths.federatedToken`                                |
+| Media-URI request | **Direct to Rhombus** `api2.rhombussystems.com`                                                            | `apiOverrideBaseUrl` + `paths.mediaUris`                                     |
+| Requirement       | Token minted with a Rhombus `**domain`** allowing this origin, or the browser call is blocked (CORS / 401) | Your backend proxies `getMediaUris`; browser never talks to Rhombus directly |
+
 
 Proxy mode is also **required for built-in Save Clip** (see [Save Clip](#save-clip)).
 
@@ -880,10 +958,10 @@ Proxy mode is also **required for built-in Save Clip** (see [Save Clip](#save-cl
 
 `connectionMode` selects which `getMediaUris` URI to use:
 
-- **`wan`** (default for buffered) — cloud path; works anywhere with internet.
-- **`lan`** — direct-to-device path (`lanLive*` fields, first non-empty entry). The browser
-  must reach the camera/NVR host (routing, firewall, and **HTTPS-vs-HTTP mixed-content** rules
-  apply). Federated auth rides as `x-auth-scheme=federated-token` & `x-auth-ft` query params.
+- `**wan`** (default for buffered) — cloud path; works anywhere with internet.
+- `**lan**` — direct-to-device path (`lanLive*` fields, first non-empty entry). The browser
+must reach the camera/NVR host (routing, firewall, and **HTTPS-vs-HTTP mixed-content** rules
+apply). Federated auth rides as `x-auth-scheme=federated-token` & `x-auth-ft` query params.
 
 > **v1.0 breaking change:** LAN no longer uses `document.cookie` or `applyLanAuthCookie`, and
 > `setRhombusLanAuthCookie` was removed. LAN now passes federated-token query params on the URL
@@ -957,10 +1035,10 @@ function CameraWithStatus({ cameraUuid }: { cameraUuid: string }) {
 
 - **Request:** `{ "durationSec": number }`.
 - **Server:** forward to Rhombus `POST /org/generateFederatedSessionToken` with your
-  **server-side** API key. Include a Rhombus **`domain`** so the browser may call
-  `api2.rhombussystems.com` in direct mode.
+**server-side** API key. Include a Rhombus `**domain`** so the browser may call
+`api2.rhombussystems.com` in direct mode.
 - **Response JSON:** must include `federatedSessionToken`. Optionally `expiresInSec` /
-  `expiresAtMs` / `expiresAt` so refresh timing matches your server-enforced cap.
+`expiresAtMs` / `expiresAt` so refresh timing matches your server-enforced cap.
 
 ### Media-URI endpoint (proxy mode only)
 
@@ -969,9 +1047,9 @@ Needed when `apiOverrideBaseUrl` is set. `POST` your `paths.mediaUris` route (de
 
 - **Request:** `{ "cameraUuid": string }`.
 - **Server:** forward Rhombus `POST /camera/getMediaUris` and return the JSON **as-is** so the
-  relevant fields survive: `wanLiveMpdUri` / `wanVodMpdUriTemplate` (WAN DASH), `lanLiveMpdUris`
-  / `lanLiveMpdUri` / `lanVodMpdUrisTemplates` (LAN DASH), `wanLiveH264Uri(s)` /
-  `lanLiveH264Uri(s)` (realtime).
+relevant fields survive: `wanLiveMpdUri` / `wanVodMpdUriTemplate` (WAN DASH), `lanLiveMpdUris`
+/ `lanLiveMpdUri` / `lanVodMpdUrisTemplates` (LAN DASH), `wanLiveH264Uri(s)` /
+`lanLiveH264Uri(s)` (realtime).
 
 A minimal Express proxy:
 
@@ -1001,19 +1079,22 @@ When `Timeline`/`RhombusPlayer` fetches seekpoints, it `POST`s `paths.footageSee
 (proxy default `/api/footage-seekpoints`) with `{ cameraUuid, startTime, duration, includeAnyMotion }`
 (seconds). Forward to Rhombus `POST /camera/getFootageSeekpointsV2` and return the JSON as-is.
 
-### <a id="clip-routes-built-in-save-clip"></a>Clip routes (built-in Save Clip)
+### Clip routes (built-in Save Clip)
 
 Built-in export needs three routes (defaults shown; override via `saveClip.paths`). All are
 **API-key authed server-side** — the federated token is *not* used here:
 
-| Route | Method | Forwards to | Notes |
-|---|---|---|---|
-| `/api/save-clip` | `POST` | `/video/spliceV3` | Forward the SDK's body as-is; return `{ clipUuid }`. |
-| `/api/clip-progress` | `POST` | `/event/getClipWithProgress` | Forward `{ clipUuid }`; return the `{ clip: { status, percentComplete, currentOperation, clipLocation } }`. |
-| `/api/clip-download` | `GET` | media host | `?clipUuid=…&region=…` → stream `/media/metadata/{region}/{clipUuid}.mp4` with the API key. |
 
-The runnable reference proxy (including the clip routes and media-host derivation) lives in
-the example repo's `server/proxy.mjs`.
+| Route                | Method | Forwards to                  | Notes                                                                                                       |
+| -------------------- | ------ | ---------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `/api/save-clip`     | `POST` | `/video/spliceV3`            | Forward the SDK's body as-is; return `{ clipUuid }`.                                                        |
+| `/api/clip-progress` | `POST` | `/event/getClipWithProgress` | Forward `{ clipUuid }`; return the `{ clip: { status, percentComplete, currentOperation, clipLocation } }`. |
+| `/api/clip-download` | `GET`  | media host                   | `?clipUuid=…&region=…` → stream `/media/metadata/{region}/{clipUuid}.mp4` with the API key.                 |
+
+
+Each route forwards to the Rhombus endpoint with your **server-side** API key (mirroring the
+token / media-URI routes above); `/api/clip-download` resolves the media host + `region` and
+streams the file back.
 
 > **Never** put Rhombus API keys in frontend headers.
 
@@ -1036,40 +1117,42 @@ the example repo's `server/proxy.mjs`.
 **Types**
 
 - Player props: `RhombusPlayerProps`, `RhombusBufferedPlayerProps`, `RhombusRealtimePlayerProps`,
-  `RhombusPlayerBaseProps`, `TimelineProps`.
+`RhombusPlayerBaseProps`, `TimelineProps`.
 - Handles: `RhombusPlayerHandle`, `RhombusBufferedPlayerHandle`, `RhombusRealtimePlayerHandle`,
-  `TimelineHandle`.
+`TimelineHandle`.
 - Unified player: `RhombusPlayerState`, `RhombusPlayerMode`,
-  `RhombusPlayerClassNames`, `RhombusLiveTransport`, `RhombusVideoFit`, `RhombusSnapshotResult`, `RhombusClipRange`,
-  `RhombusClipVisibility`, `RhombusClipExportOptions`, `RhombusClipExportPhase`,
-  `RhombusClipExportStatus`, `RhombusSaveClipConfig`, `RhombusPlayerTimelineConfig`.
+`RhombusPlayerClassNames`, `RhombusLiveTransport`, `RhombusVideoFit`, `RhombusSnapshotResult`, `RhombusClipRange`,
+`RhombusClipVisibility`, `RhombusClipExportOptions`, `RhombusClipExportPhase`,
+`RhombusClipExportStatus`, `RhombusSaveClipConfig`, `RhombusPlayerTimelineConfig`.
 - Timeline: `TimelineMark`, `TimelineColors`, `RhombusFootageSeekPoint`.
 - Quality / mode: `RhombusBufferedStreamQuality`, `RhombusRealtimeStreamQuality`,
-  `RhombusConnectionMode`, `RhombusRealtimeConnectionMode`, `RhombusPlayerPaths`.
+`RhombusConnectionMode`, `RhombusRealtimeConnectionMode`, `RhombusPlayerPaths`.
 - Misc: `FederatedTokenFetchResult`, `RhombusDashPlayerCallbacks`, `RhombusDashQualityCallbacks`.
 
 **Helpers** (most apps never need these — the components do all of this internally)
 
-| Export | Purpose |
-|---|---|
-| `fetchFederatedSessionToken(url, headers, durationSec, usedDefaultPath)` | Manually fetch a token. |
-| `getFederatedTokenRefreshDelayMs(args)` | Compute the next refresh delay from TTL + hints. |
-| `formatVodMpdUri(template, startTimeSec, durationSec)` | Fill `{START_TIME}`/`{DURATION}` in a VOD template. |
-| `getDefaultRhombusDashSettings()` / `getDefaultRhombusVodDashSettings()` | The Dash.js settings the SDK uses. |
-| `resolveLiveH264WebSocketUrl(options)` | Resolve the authed realtime socket URL yourself. |
-| `startRhombusRealtimeSession(options)` | Drive the WebSocket + WebCodecs decode loop onto your own canvas. |
-| `snapshotCanvasElement(canvas, opts)` / `snapshotVideoElement(video, opts)` | Capture a frame → `RhombusSnapshotResult`. |
-| `chooseVodAnchor`, `isWithinWindow`, `vodOffsetToWallClock`, `wallClockToVodOffset`, `shouldSwitchToLive`, `isAtLiveEdge` | Pure VOD time-math helpers used by the switching logic. |
-| `requestClipSplice(options)` / `fetchClipProgress(options)` / `buildClipDownloadUrl(options)` | Build your own Save Clip flow. |
+
+| Export                                                                                                                    | Purpose                                                           |
+| ------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `fetchFederatedSessionToken(url, headers, durationSec, usedDefaultPath)`                                                  | Manually fetch a token.                                           |
+| `getFederatedTokenRefreshDelayMs(args)`                                                                                   | Compute the next refresh delay from TTL + hints.                  |
+| `formatVodMpdUri(template, startTimeSec, durationSec)`                                                                    | Fill `{START_TIME}`/`{DURATION}` in a VOD template.               |
+| `getDefaultRhombusDashSettings()` / `getDefaultRhombusVodDashSettings()`                                                  | The Dash.js settings the SDK uses.                                |
+| `resolveLiveH264WebSocketUrl(options)`                                                                                    | Resolve the authed realtime socket URL yourself.                  |
+| `startRhombusRealtimeSession(options)`                                                                                    | Drive the WebSocket + WebCodecs decode loop onto your own canvas. |
+| `snapshotCanvasElement(canvas, opts)` / `snapshotVideoElement(video, opts)`                                               | Capture a frame → `RhombusSnapshotResult`.                        |
+| `chooseVodAnchor`, `isWithinWindow`, `vodOffsetToWallClock`, `wallClockToVodOffset`, `shouldSwitchToLive`, `isAtLiveEdge` | Pure VOD time-math helpers used by the switching logic.           |
+| `requestClipSplice(options)` / `fetchClipProgress(options)` / `buildClipDownloadUrl(options)`                             | Build your own Save Clip flow.                                    |
+
 
 ---
 
 ## Browser support
 
-- **`RhombusBufferedPlayer`** (and `RhombusPlayer` in buffered mode): any modern browser with
-  MSE (Dash.js). Broadest support.
-- **`RhombusRealtimePlayer`** (and `RhombusPlayer`'s default live transport): needs **WebCodecs**
-  `VideoDecoder` with H.264 — Chrome, Edge, Safari 16.4+. Firefox H.264 is still limited.
+- `**RhombusBufferedPlayer`** (and `RhombusPlayer` in buffered mode): any modern browser with
+MSE (Dash.js). Broadest support.
+- `**RhombusRealtimePlayer**` (and `RhombusPlayer`'s default live transport): needs **WebCodecs**
+`VideoDecoder` with H.264 — Chrome, Edge, Safari 16.4+. Firefox H.264 is still limited.
 
 `RhombusPlayer` feature-detects WebCodecs and **auto-falls back** to buffered live; for the
 low-level players, detect yourself:
@@ -1085,24 +1168,26 @@ return supportsRealtime
 
 ## Troubleshooting
 
-| Symptom | Likely cause / fix |
-|---|---|
-| **404 on `/api/federated-token`** | Token route not implemented / wrong path. Implement it or set `paths.federatedToken`. Check the console `[Rhombus…]` hint. |
-| **CORS / 401 / 403 on `getMediaUris`** (direct mode) | Token not minted with a `domain` authorizing this origin. Add `domain` server-side, or set `apiOverrideBaseUrl` to proxy media. |
-| **Save Clip button missing** | Built-in export needs proxy mode — set `apiOverrideBaseUrl`. Without it, use `onClipRangeSelect` and export yourself. |
-| **Clip download 404** | The `/api/clip-download` route can't resolve the media host/region. Verify the route streams `/media/metadata/{region}/{uuid}.mp4` with the API key. |
-| **Realtime shows black, then recovers** | Normal stall-watchdog reconnect. Tune `stallTimeoutMs`; surface `onRecoveryAttempt`. |
-| **Realtime never renders, no errors** | Browser lacks WebCodecs H.264 (e.g. Firefox). Use buffered, or let `RhombusPlayer` fall back. |
-| **LAN won't connect** | Browser can't reach the device host, or mixed content (HTTPS page → HTTP device). Check routing/firewall and protocol. |
-| **VOD / timeline empty for a range** | No recorded footage for that window. Pick a range when the camera was recording. |
-| **Short blip on quality / token change (realtime)** | Expected — realtime reconnects the socket. Buffered changes are seamless. |
+
+| Symptom                                              | Likely cause / fix                                                                                                                                   |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **404 on `/api/federated-token`**                    | Token route not implemented / wrong path. Implement it or set `paths.federatedToken`. Check the console `[Rhombus…]` hint.                           |
+| **CORS / 401 / 403 on `getMediaUris`** (direct mode) | Token not minted with a `domain` authorizing this origin. Add `domain` server-side, or set `apiOverrideBaseUrl` to proxy media.                      |
+| **Save Clip button missing**                         | Built-in export needs proxy mode — set `apiOverrideBaseUrl`. Without it, use `onClipRangeSelect` and export yourself.                                |
+| **Clip download 404**                                | The `/api/clip-download` route can't resolve the media host/region. Verify the route streams `/media/metadata/{region}/{uuid}.mp4` with the API key. |
+| **Realtime shows black, then recovers**              | Normal stall-watchdog reconnect. Tune `stallTimeoutMs`; surface `onRecoveryAttempt`.                                                                 |
+| **Realtime never renders, no errors**                | Browser lacks WebCodecs H.264 (e.g. Firefox). Use buffered, or let `RhombusPlayer` fall back.                                                        |
+| **LAN won't connect**                                | Browser can't reach the device host, or mixed content (HTTPS page → HTTP device). Check routing/firewall and protocol.                               |
+| **VOD / timeline empty for a range**                 | No recorded footage for that window. Pick a range when the camera was recording.                                                                     |
+| **Short blip on quality / token change (realtime)**  | Expected — realtime reconnects the socket. Buffered changes are seamless.                                                                            |
+
 
 ---
 
 ## Migrating from 1.x → 2.0
 
-2.0 is mostly **additive** — it introduces the unified [`RhombusPlayer`](#rhombusplayer--the-unified-player),
-the standalone [`Timeline`](#timeline--standalone-scrubber), the `RhombusPlayerControl`
+2.0 is mostly **additive** — it introduces the unified `[RhombusPlayer](#rhombusplayer--the-unified-player)`,
+the standalone `[Timeline](#timeline--standalone-scrubber)`, the `RhombusPlayerControl`
 constant, and the snapshot / clip / VOD-time helpers. None of that requires changes to
 existing 1.x code.
 
@@ -1161,11 +1246,11 @@ function LiveView({ id }: { id: string }) {
 ### Not breaking (no action needed)
 
 - The auth/endpoint/resilience props were consolidated into a shared `RhombusPlayerBaseProps`
-  type, but `RhombusBufferedPlayerProps` / `RhombusRealtimePlayerProps` keep the **same shape**.
+type, but `RhombusBufferedPlayerProps` / `RhombusRealtimePlayerProps` keep the **same shape**.
 - Both players now accept a `ref` (`forwardRef`) — additive; existing usage is unaffected.
 - `RhombusPlayerPaths` gained an optional `footageSeekpoints` field.
 - `RhombusPlayerControl` is exported as a named constant **and** a string union, so existing
-  string literals keep working.
+string literals keep working.
 
 ---
 

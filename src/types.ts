@@ -536,8 +536,32 @@ export type RhombusPlayerHandle = {
 };
 
 export type RhombusPlayerProps = RhombusPlayerBaseProps & {
-  /** Default live transport. Default `realtime` (auto-falls back to `buffered` without WebCodecs). */
+  /**
+   * Live transport. **Controllable**: seeds the value; the built-in switcher / `ref` update it
+   * internally, but if you pass it (and update it from `onTransportChange`) it becomes controlled.
+   * Default `realtime` (auto-falls back to `buffered` without WebCodecs).
+   */
   liveTransport?: RhombusLiveTransport;
+  /**
+   * Play/pause. **Controllable**: omit for uncontrolled (internal, starts playing); pass a boolean
+   * (and update it from `onPlayingChange`) to control it. `false` in live freezes to a VOD frame.
+   */
+  playing?: boolean;
+  /**
+   * Playback speed (VOD only; ignored while live). **Controllable** — pair with `onPlaybackRateChange`.
+   */
+  playbackRate?: number;
+  /**
+   * Digital zoom level (1–4). **Controllable** — pair with `onZoomChange`. Out-of-range values clamp.
+   */
+  zoom?: number;
+  /**
+   * Controlled playhead, epoch ms. Honored when its value **changes** (the player seeks there and
+   * derives live/vod: within `liveEdgeToleranceSec` of now ⇒ live in the current transport, else
+   * VOD). The player still advances on its own — mirror `onProgress`/`onSeek` for two-way binding.
+   * There is no `mode` prop; mode is derived from `positionMs` vs now.
+   */
+  positionMs?: number;
   /**
    * How the video fills its area. Default `"auto"` (the player box takes the video's aspect ratio,
    * so there are no bars). See {@link RhombusVideoFit}. Acts as the initial value: the built-in
@@ -579,7 +603,11 @@ export type RhombusPlayerProps = RhombusPlayerBaseProps & {
   onModeChange?: (mode: RhombusPlayerMode, atWallClockMs: number) => void;
   onTransportChange?: (transport: RhombusLiveTransport) => void;
   onSeek?: (wallClockMs: number, mode: RhombusPlayerMode) => void;
+  /** Throttled playback progress (~4Hz). Use to mirror playback into a controlled `positionMs`. */
+  onProgress?: (wallClockMs: number, mode: RhombusPlayerMode) => void;
   onPlayingChange?: (playing: boolean) => void;
+  /** Fired when the playback speed changes (built-in control, `ref`, or settling). */
+  onPlaybackRateChange?: (rate: number) => void;
   onSnapshot?: (result: RhombusSnapshotResult) => void;
   onZoomChange?: (zoom: number, panX: number, panY: number) => void;
   /** Fired when the built-in video-display control changes the fit. */
