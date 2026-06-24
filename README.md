@@ -17,7 +17,7 @@ Your Rhombus **API key never ships to the browser**. Everything is built around 
 - [Install](#install)
 - [Quick start](#quick-start)
 - [Choosing a component](#choosing-a-component)
-- `[RhombusPlayer` — the unified player](#rhombusplayer--the-unified-player)
+- [`RhombusPlayer` — the unified player](#rhombusplayer--the-unified-player)
   - [How Live ⇄ VOD switching works](#how-live--vod-switching-works)
   - [Props](#rhombusplayer-props)
   - [Imperative handle (`ref`)](#imperative-handle-ref)
@@ -28,9 +28,9 @@ Your Rhombus **API key never ships to the browser**. Everything is built around 
   - [Save Clip](#save-clip)
   - [Timeline configuration](#timeline-configuration)
   - [Recipes](#rhombusplayer-recipes)
-- `[RhombusBufferedPlayer` — DASH live & VOD](#rhombusbufferedplayer--dash-live--vod)
-- `[RhombusRealtimePlayer` — low-latency live](#rhombusrealtimeplayer--low-latency-live)
-- `[Timeline` — standalone scrubber](#timeline--standalone-scrubber)
+- [`RhombusBufferedPlayer` — DASH live & VOD](#rhombusbufferedplayer--dash-live--vod)
+- [`RhombusRealtimePlayer` — low-latency live](#rhombusrealtimeplayer--low-latency-live)
+- [`Timeline` — standalone scrubber](#timeline--standalone-scrubber)
 - [Authentication & tokens](#authentication--tokens)
 - [WAN vs LAN](#wan-vs-lan)
 - [Stream quality](#stream-quality)
@@ -40,7 +40,7 @@ Your Rhombus **API key never ships to the browser**. Everything is built around 
 - [Browser support](#browser-support)
 - [Troubleshooting](#troubleshooting)
 - [Migrating from 1.x → 2.0](#migrating-from-1x--20)
-- [Maintainers](#maintainers)
+- [License](#license)
 
 ---
 
@@ -88,8 +88,8 @@ export function CameraView() {
   
 Prefer to compose your own layout? Drop down to the individual building blocks — each has a deep-dive section further down the page:
 
-- `**[RhombusBufferedPlayer](#rhombusbufferedplayer--dash-live--vod)`** — MPEG-DASH live & VOD on a real `<video>` element; native pause/seek, widest browser support.
-- `**[RhombusRealtimePlayer](#rhombusrealtimeplayer--low-latency-live)**` — sub-second live H.264 over WebSocket, decoded with WebCodecs onto a `<canvas>` (live only).
+- **[`RhombusBufferedPlayer`](#rhombusbufferedplayer--dash-live--vod)** — MPEG-DASH live & VOD on a real `<video>` element; native pause/seek, widest browser support.
+- **[`RhombusRealtimePlayer`](#rhombusrealtimeplayer--low-latency-live)** — sub-second live H.264 over WebSocket, decoded with WebCodecs onto a `<canvas>` (live only).
 
 ---
 
@@ -146,7 +146,7 @@ seeking **outside** it loads a fresh manifest window.
 ### `RhombusPlayer` props
 
 Every prop `RhombusPlayer` accepts. Only `cameraUuid` is required; everything else is
-optional. (The auth / endpoint / resilience props are the [shared base props](#shared-base-props)
+optional. (The auth / endpoint / resilience props are the [shared base props](#shared-base-props-all-players)
 common to all players.)
 
 
@@ -227,7 +227,7 @@ React one: see "Notes" below.)
   player derives live vs. VOD: within `liveEdgeToleranceSec` of now ⇒ live in the current
    transport, else VOD — there is **no** `mode` prop). The player still advances on its own; for a
    two-way binding, mirror `onProgress` (throttled) and/or `onSeek` back into `positionMs`:
-3. **Imperative actions** — one-shot commands on the `[ref](#imperative-handle-ref)`. Some are just
+3. **Imperative actions** — one-shot commands on the [`ref`](#imperative-handle-ref). Some are just
   sugar over a declarative prop (use whichever you prefer); two are **strictly imperative** because
    they return a value / run an async side-effect and have no meaningful "state" to bind:
 
@@ -292,7 +292,7 @@ function Controlled() {
 | `snapshot()`                                  | `Promise<RhombusSnapshotResult>` — capture the current frame.    |
 | `setLiveTransport("realtime" | "buffered")`   | Switch transport (clamps to buffered without WebCodecs).         |
 | `startClipExport(range?, options?)`           | `Promise<RhombusClipExportStatus>` — export a clip (proxy mode). |
-| `getState()`                                  | Current `[RhombusPlayerState](#observable-state)` snapshot.      |
+| `getState()`                                  | Current [`RhombusPlayerState`](#observable-state) snapshot.      |
 
 
 ### Observable state
@@ -556,7 +556,7 @@ await player.current!.startClipExport(
 
 ### Timeline configuration
 
-`RhombusPlayer` renders a `[Timeline](#timeline--standalone-scrubber)` when `controls`
+`RhombusPlayer` renders a [`Timeline`](#timeline--standalone-scrubber) when `controls`
 includes `"timeline"` (the default). Configure it with the `timeline` prop:
 
 ```ts
@@ -733,7 +733,7 @@ pause, seek, or VOD. Sub-second latency; ideal for a video wall or PTZ control.
 />
 ```
 
-Accepts all [shared base props](#shared-base-props), plus:
+Accepts all [shared base props](#shared-base-props-all-players), plus:
 
 
 | Prop                    | Type                   | Default          | Notes                                                                                                                |
@@ -778,7 +778,7 @@ import { Timeline } from "@rhombussystems/react";
 />
 ```
 
-Accepts the [shared base props](#shared-base-props) (for the seekpoint fetch) plus:
+Accepts the [shared base props](#shared-base-props-all-players) (for the seekpoint fetch) plus:
 
 
 | Prop                                                | Type                                                   | Default            | Notes                                                                                                             |
@@ -852,7 +852,7 @@ object instead (every field optional, merged over the defaults). On `RhombusPlay
 `Timeline` is just a seek UI — it has no idea what's playing. You wire it to a video by (a)
 feeding it the current playhead as `currentTimeMs`, and (b) handling `onSeek` to move that
 video. Here it is paired with a `RhombusBufferedPlayer` in VOD mode, using the player's
-`[ref` handle](#rhombusbufferedplayer-specific-props) (`getVideoElement()`) to read and drive
+[`ref` handle](#rhombusbufferedplayer-specific-props) (`getVideoElement()`) to read and drive
 the underlying `<video>`. Wall-clock maps to the video as `windowStart + video.currentTime`:
 
 ```tsx
@@ -1186,8 +1186,8 @@ return supportsRealtime
 
 ## Migrating from 1.x → 2.0
 
-2.0 is mostly **additive** — it introduces the unified `[RhombusPlayer](#rhombusplayer--the-unified-player)`,
-the standalone `[Timeline](#timeline--standalone-scrubber)`, the `RhombusPlayerControl`
+2.0 is mostly **additive** — it introduces the unified [`RhombusPlayer`](#rhombusplayer--the-unified-player),
+the standalone [`Timeline`](#timeline--standalone-scrubber), the `RhombusPlayerControl`
 constant, and the snapshot / clip / VOD-time helpers. None of that requires changes to
 existing 1.x code.
 
