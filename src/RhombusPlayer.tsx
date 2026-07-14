@@ -253,9 +253,9 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
     const seekTo = useCallback(
       (targetMs: number) => {
         const now = Date.now();
-        // A user seek implies "play from here" — reconciled when the (possibly fresh) transport
-        // becomes ready. (Seeking within an already-playing window just keeps playing.)
-        desiredPlayingRef.current = true;
+        // A seek preserves the user's play/pause intent: playing keeps playing at the new time,
+        // paused stays paused there (reconciled when the possibly-fresh transport becomes ready).
+        // `desiredPlayingRef` already holds that intent, so it is deliberately left untouched.
         if (shouldSwitchToLive(targetMs, now, cfgRef.current.liveEdgeToleranceSec)) {
           goLive();
           return;

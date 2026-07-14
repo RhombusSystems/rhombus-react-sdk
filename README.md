@@ -141,7 +141,9 @@ canvas, sub-second). It auto-falls back to **buffered** DASH when WebCodecs is u
 
 Only one transport is mounted at a time, so a switch costs one brief reconnect (no double
 bandwidth). Seeking **within** the loaded VOD window is instant (native `<video>` seek);
-seeking **outside** it loads a fresh manifest window.
+seeking **outside** it loads a fresh manifest window. A seek **preserves the play/pause
+state**: if playback was paused, it stays paused at the new time; if playing, it keeps
+playing (seeking to the live edge always resumes, since realtime live cannot be paused).
 
 ### `RhombusPlayer` props
 
