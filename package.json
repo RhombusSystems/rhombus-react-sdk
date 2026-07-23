@@ -1,7 +1,7 @@
 {
   "name": "@rhombussystems/react",
-  "version": "2.0.2",
-  "description": "React components for Rhombus camera streaming (DASH via Dash.js and realtime H.264 via WebSocket + WebCodecs)",
+  "version": "2.1.0",
+  "description": "React components for Rhombus video and audio streaming",
   "license": "MIT",
   "author": "Rhombus Systems",
   "repository": {
@@ -24,6 +24,7 @@
   "sideEffects": false,
   "scripts": {
     "build": "tsup",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "tsup"
   },
@@ -32,14 +33,19 @@
     "react-dom": ">=18.0.0"
   },
   "dependencies": {
-    "dashjs": "^4.7.4"
+    "dashjs": "^4.7.4",
+    "opus-decoder": "^0.7.11"
   },
   "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "jsdom": "^29.1.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tsup": "^8.3.5",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.10"
   }
 }

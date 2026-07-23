@@ -28,6 +28,15 @@ export type RhombusPlayerPaths = {
    */
   mediaUris?: string;
   /**
+   * POST path for the SDK-facing audio media-URI proxy. Default `/api/audio-media-uris`.
+   * The request body is `{ source: RhombusAudioSource }`.
+   */
+  audioMediaUris?: string;
+  /** Direct Rhombus path for A100 media URIs. Default `/audiogateway/getMediaUris`. */
+  audioGatewayMediaUris?: string;
+  /** Direct Rhombus path for DR40 media URIs. Default `/doorbellcamera/getMediaUris`. */
+  dr40MediaUris?: string;
+  /**
    * POST path for footage seekpoints (`/camera/getFootageSeekpointsV2`). Used by {@link Timeline} when
    * `fetchSeekPoints` is enabled. In proxy mode resolved against `apiOverrideBaseUrl` (default
    * `/api/footage-seekpoints`); in direct Rhombus mode resolved against `rhombusApiBaseUrl`
@@ -40,9 +49,7 @@ export type RhombusPlayerPaths = {
  * Auth, endpoint, and resilience props shared by every Rhombus player
  * (`RhombusBufferedPlayer`, `RhombusRealtimePlayer`, and the unified `RhombusPlayer`).
  */
-export type RhombusPlayerBaseProps = {
-  /** Camera UUID from Rhombus (safe to use in the browser). */
-  cameraUuid: string;
+export type RhombusMediaBaseProps = {
   /**
    * `wan`: use the WAN media URIs from `getMediaUris`.
    * `lan`: use the LAN media URIs (first entry wins). Default `wan`.
@@ -106,6 +113,12 @@ export type RhombusPlayerBaseProps = {
   style?: CSSProperties;
   /** Called when token fetch, media URI fetch, or transport setup fails. */
   onError?: (error: Error) => void;
+};
+
+/** Shared media props plus the camera identifier required by the video players. */
+export type RhombusPlayerBaseProps = RhombusMediaBaseProps & {
+  /** Camera UUID from Rhombus (safe to use in the browser). */
+  cameraUuid: string;
 };
 
 export type RhombusBufferedPlayerProps = RhombusPlayerBaseProps & {
@@ -214,6 +227,46 @@ export type RhombusVideoFit = "contain" | "cover" | "fill" | "auto";
 
 /** Whether the unified player is showing the live edge or past (VOD) footage. */
 export type RhombusPlayerMode = "live" | "vod";
+
+/** Reactive state shared by synchronized Rhombus media participants. */
+export type RhombusPlaybackControllerState = {
+  mode: RhombusPlayerMode;
+  positionMs: number;
+  playing: boolean;
+  playbackRate: number;
+  muted: boolean;
+  volume: number;
+  isAtLiveEdge: boolean;
+  status: "idle" | "connecting" | "buffering" | "ready" | "reconnecting" | "error";
+  /** Increments for every explicit seek, including Go Live and rewind. */
+  seekSequence: number;
+};
+
+/** Initial values and shared timeline behavior for {@link useRhombusPlaybackController}. */
+export type RhombusPlaybackControllerOptions = {
+  initialMode?: RhombusPlayerMode;
+  initialPositionMs?: number;
+  initialPlaying?: boolean;
+  initialPlaybackRate?: number;
+  initialMuted?: boolean;
+  initialVolume?: number;
+  defaultRewindSec?: number;
+  liveEdgeToleranceSec?: number;
+  autoGoLiveAtEdge?: boolean;
+};
+
+/** Shared controller accepted by video, audio, and {@link Timeline}. */
+export type RhombusPlaybackController = {
+  state: RhombusPlaybackControllerState;
+  play: () => void;
+  pause: () => void;
+  goLive: () => void;
+  seekTo: (wallClockMs: number) => void;
+  rewind: (seconds?: number) => void;
+  setPlaybackRate: (rate: number) => void;
+  setMuted: (muted: boolean) => void;
+  setVolume: (volume: number) => void;
+};
 
 /**
  * Built-in controls that {@link RhombusPlayer} can render.
@@ -398,7 +451,14 @@ export type TimelineColors = {
   selectionHandle?: string;
 };
 
-export type TimelineProps = RhombusPlayerBaseProps & {
+export type TimelineProps = RhombusMediaBaseProps & {
+  /**
+   * Camera UUID used only for optional footage-seekpoint fetching. Required at runtime when
+   * `fetchSeekPoints` is true; it may be omitted for a controller-driven or vendor-neutral timeline.
+   */
+  cameraUuid?: string;
+  /** Shared controller used as the playhead and seek target when provided. */
+  playbackController?: RhombusPlaybackController;
   /** Left edge of the visible time window (epoch ms). */
   rangeStartMs: number;
   /** Right edge of the visible time window (epoch ms). */
@@ -406,7 +466,7 @@ export type TimelineProps = RhombusPlayerBaseProps & {
   /** Current playhead position (epoch ms); `null`/omitted hides the playhead. */
   currentTimeMs?: number | null;
   /** Called with the wall-clock time when the user clicks/drags to seek. */
-  onSeek: (wallClockMs: number) => void;
+  onSeek?: (wallClockMs: number) => void;
   /** Called as the pointer hovers the bar (epoch ms), or `null` when it leaves. */
   onHoverTimeChange?: (wallClockMs: number | null) => void;
   /** Clip selection range (epoch ms). When set, draws draggable handles + a shaded region. */
@@ -537,6 +597,11 @@ export type RhombusPlayerHandle = {
 
 export type RhombusPlayerProps = RhombusPlayerBaseProps & {
   /**
+   * Optional shared playback controller. Its play/pause, position, rate, volume, and mute state
+   * take precedence over the equivalent player props so one timeline can drive video and audio.
+   */
+  playbackController?: RhombusPlaybackController;
+  /**
    * Live transport. **Controllable**: seeds the value; the built-in switcher / `ref` update it
    * internally, but if you pass it (and update it from `onTransportChange`) it becomes controlled.
    * Default `realtime` (auto-falls back to `buffered` without WebCodecs).
@@ -616,4 +681,103 @@ export type RhombusPlayerProps = RhombusPlayerBaseProps & {
   onClipRangeSelect?: (range: RhombusClipRange) => void;
   /** Built-in clip export progress/result. */
   onClipExport?: (status: RhombusClipExportStatus) => void;
+};
+
+/* ------------------------------------------------------------------------------------------ *
+ * Unified audio player (`RhombusAudioPlayer`)
+ * ------------------------------------------------------------------------------------------ */
+
+/** A Rhombus device that can provide live and historical audio. */
+export type RhombusAudioSource =
+  | { type: "audio-gateway"; uuid: string }
+  | { type: "dr40"; uuid: string };
+
+/** Active audio transport selected by {@link RhombusAudioPlayer}. */
+export type RhombusAudioTransport =
+  | "opus-live"
+  | "dash-vod"
+  | "decoded-vod"
+  | "embedded-dr40";
+
+export const RhombusAudioPlayerControl = {
+  Play: "play",
+  GoLive: "goLive",
+  Rewind: "rewind",
+  Speed: "speed",
+  Volume: "volume",
+  Timeline: "timeline",
+} as const;
+
+/** A built-in audio control identifier. */
+export type RhombusAudioPlayerControl =
+  (typeof RhombusAudioPlayerControl)[keyof typeof RhombusAudioPlayerControl];
+
+/** Per-slot class names for the audio player's controls. */
+export type RhombusAudioPlayerClassNames = {
+  controls?: string;
+  button?: string;
+  speed?: string;
+  volume?: string;
+  status?: string;
+  timeline?: string;
+};
+
+/** Observable audio state passed to custom controls and returned by the imperative handle. */
+export type RhombusAudioPlayerState = {
+  source: RhombusAudioSource;
+  mode: RhombusPlayerMode;
+  transport: RhombusAudioTransport;
+  playing: boolean;
+  playbackRate: number;
+  muted: boolean;
+  volume: number;
+  currentWallClockMs: number | null;
+  isAtLiveEdge: boolean;
+  status: RhombusPlaybackControllerState["status"];
+};
+
+/** Imperative API exposed by {@link RhombusAudioPlayer}. */
+export type RhombusAudioPlayerHandle = {
+  play: () => void;
+  pause: () => void;
+  goLive: () => void;
+  seekTo: (wallClockMs: number) => void;
+  rewind: (seconds?: number) => void;
+  setPlaybackRate: (rate: number) => void;
+  setMuted: (muted: boolean) => void;
+  setVolume: (volume: number) => void;
+  getState: () => RhombusAudioPlayerState;
+};
+
+/** Props for the unified A100/DR40 audio player. */
+export type RhombusAudioPlayerProps = RhombusMediaBaseProps & {
+  source: RhombusAudioSource;
+  playbackController?: RhombusPlaybackController;
+  playing?: boolean;
+  positionMs?: number;
+  playbackRate?: number;
+  muted?: boolean;
+  /** Linear gain in the inclusive range 0–1. */
+  volume?: number;
+  initialMode?: RhombusPlayerMode;
+  initialStartTimeMs?: number;
+  vodWindowSec?: number;
+  defaultRewindSec?: number;
+  liveEdgeToleranceSec?: number;
+  autoGoLiveAtEdge?: boolean;
+  controls?: RhombusAudioPlayerControl[];
+  classNames?: RhombusAudioPlayerClassNames;
+  renderControls?: (api: RhombusAudioPlayerHandle, state: RhombusAudioPlayerState) => ReactNode;
+  timeline?: RhombusPlayerTimelineConfig;
+  onReady?: () => void;
+  onModeChange?: (mode: RhombusPlayerMode, atWallClockMs: number) => void;
+  onTransportChange?: (transport: RhombusAudioTransport) => void;
+  onSeek?: (wallClockMs: number, mode: RhombusPlayerMode) => void;
+  onProgress?: (wallClockMs: number, mode: RhombusPlayerMode) => void;
+  onPlayingChange?: (playing: boolean) => void;
+  onPlaybackRateChange?: (rate: number) => void;
+  onMutedChange?: (muted: boolean) => void;
+  onVolumeChange?: (volume: number) => void;
+  onStatusChange?: (status: RhombusPlaybackControllerState["status"]) => void;
+  onStateChange?: (state: RhombusAudioPlayerState) => void;
 };

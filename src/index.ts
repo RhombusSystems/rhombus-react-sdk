@@ -2,9 +2,18 @@ export { RhombusBufferedPlayer } from "./RhombusBufferedPlayer.js";
 export { RhombusRealtimePlayer } from "./RhombusRealtimePlayer.js";
 export { RhombusPlayer } from "./RhombusPlayer.js";
 export { RhombusPlayerControls } from "./RhombusPlayerControls.js";
+export { RhombusAudioPlayer } from "./RhombusAudioPlayer.js";
+export {
+  RhombusAudioPlayerControls,
+} from "./RhombusAudioPlayerControls.js";
+export type {
+  RhombusAudioPlayerControlsProps,
+} from "./RhombusAudioPlayerControls.js";
+export { useRhombusPlaybackController } from "./useRhombusPlaybackController.js";
 export { Timeline } from "./Timeline.js";
 // `RhombusPlayerControl` is a value (named constant) + type — exported as a value so both work.
 export { RhombusPlayerControl } from "./types.js";
+export { RhombusAudioPlayerControl } from "./types.js";
 export type { TimelineHandle } from "./Timeline.js";
 export type {
   RhombusBufferedStreamQuality,
@@ -13,6 +22,7 @@ export type {
   RhombusConnectionMode,
   RhombusPlayerBaseProps,
   RhombusPlayerPaths,
+  RhombusMediaBaseProps,
   RhombusRealtimeConnectionMode,
   RhombusRealtimePlayerHandle,
   RhombusRealtimePlayerProps,
@@ -33,6 +43,15 @@ export type {
   RhombusClipExportStatus,
   RhombusSaveClipConfig,
   RhombusPlayerTimelineConfig,
+  RhombusPlaybackController,
+  RhombusPlaybackControllerOptions,
+  RhombusPlaybackControllerState,
+  RhombusAudioSource,
+  RhombusAudioTransport,
+  RhombusAudioPlayerProps,
+  RhombusAudioPlayerHandle,
+  RhombusAudioPlayerState,
+  RhombusAudioPlayerClassNames,
   // Timeline
   TimelineProps,
   TimelineMark,

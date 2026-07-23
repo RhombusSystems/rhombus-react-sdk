@@ -218,6 +218,7 @@ const NAV_BTN_STYLE: React.CSSProperties = {
 export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timeline(
   {
     cameraUuid,
+    playbackController,
     apiOverrideBaseUrl,
     rhombusApiBaseUrl,
     paths,
@@ -252,6 +253,9 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
   ref
 ) {
   const theme = useMemo(() => resolveColors(colors), [colors]);
+  const resolvedCurrentTimeMs =
+    playbackController?.state.positionMs ?? currentTimeMs;
+  const resolvedOnSeek = playbackController?.seekTo ?? onSeek;
   const themeRef = useRef(theme);
   themeRef.current = theme;
   const canvasWrapRef = useRef<HTMLDivElement>(null);
@@ -268,8 +272,8 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
   heightRef.current = height;
   const hoverRef = useRef(hoverMs);
   hoverRef.current = hoverMs;
-  const currentTimeRef = useRef(currentTimeMs);
-  currentTimeRef.current = currentTimeMs;
+  const currentTimeRef = useRef(resolvedCurrentTimeMs);
+  currentTimeRef.current = resolvedCurrentTimeMs;
   const marksRef = useRef(marks);
   marksRef.current = marks;
   const rangeStartRef = useRef(rangeStartMs);
@@ -294,8 +298,8 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
     originSel: { startMs: number; endMs: number };
   }>({ mode: null, originTime: 0, originSel: { startMs: 0, endMs: 0 } });
 
-  const onSeekRef = useRef(onSeek);
-  onSeekRef.current = onSeek;
+  const onSeekRef = useRef(resolvedOnSeek);
+  onSeekRef.current = resolvedOnSeek;
   const onHoverRef = useRef(onHoverTimeChange);
   onHoverRef.current = onHoverTimeChange;
   const onLoadedRef = useRef(onSeekPointsLoaded);
@@ -332,6 +336,13 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
 
   useEffect(() => {
     if (!fetchSeekPoints) {
+      setSeekpoints([]);
+      return;
+    }
+    if (!cameraUuid) {
+      onErrorRef.current?.(
+        new Error("Timeline cameraUuid is required when fetchSeekPoints is enabled")
+      );
       setSeekpoints([]);
       return;
     }
@@ -511,7 +522,7 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
   // Redraw on non-range state changes (uses the current animated range).
   useEffect(() => {
     draw();
-  }, [draw, width, height, currentTimeMs, hoverMs, seekpoints, marks, theme, selection]);
+  }, [draw, width, height, resolvedCurrentTimeMs, hoverMs, seekpoints, marks, theme, selection]);
 
   // Animate the drawn range toward the target range whenever the props change.
   useEffect(() => {
@@ -677,7 +688,7 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
 
   // Center used by the zoom buttons: the playhead if it's in view, else the window midpoint.
   const zoomButtonCenter = () => {
-    const cur = currentTimeMs;
+    const cur = resolvedCurrentTimeMs;
     if (cur != null && cur >= rangeStartMs && cur <= rangeEndMs) return cur;
     return (rangeStartMs + rangeEndMs) / 2;
   };
@@ -716,7 +727,7 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
           if (t == null) return;
           setHoverMs(t);
           onHoverRef.current?.(t);
-          if (draggingRef.current) onSeekRef.current(t);
+          if (draggingRef.current) onSeekRef.current?.(t);
         }}
         onPointerUp={e => {
           if (selDragRef.current.mode) {
@@ -726,7 +737,7 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
           const wasDragging = draggingRef.current;
           draggingRef.current = false;
           const t = pointerTime(e.clientX);
-          if (t != null && wasDragging) onSeekRef.current(t);
+          if (t != null && wasDragging) onSeekRef.current?.(t);
         }}
         onPointerLeave={() => {
           if (draggingRef.current || selDragRef.current.mode) return;

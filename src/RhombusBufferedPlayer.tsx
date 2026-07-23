@@ -1,9 +1,9 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
-import {
-  MediaPlayer,
-  type ErrorEvent as DashJSErrorEvent,
-  type MediaPlayerClass,
+import type {
+  ErrorEvent as DashJSErrorEvent,
+  MediaPlayerClass,
 } from "dashjs";
+import { MediaPlayer } from "./dashjsRuntime.js";
 import type { FederatedTokenFetchResult, RhombusDashPlayerCallbacks } from "./rhombusPlayback.js";
 import {
   createRhombusDashPlayer,

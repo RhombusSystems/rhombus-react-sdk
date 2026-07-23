@@ -1,9 +1,9 @@
-import {
-  MediaPlayer,
-  type ErrorEvent as DashJSErrorEvent,
-  type MediaPlayerErrorEvent,
-  type MediaPlayerClass,
+import type {
+  ErrorEvent as DashJSErrorEvent,
+  MediaPlayerErrorEvent,
+  MediaPlayerClass,
 } from "dashjs";
+import { MediaPlayer } from "./dashjsRuntime.js";
 import { getDefaultRhombusDashSettings, getDefaultRhombusVodDashSettings } from "./dashSettings.js";
 import {
   appendResolutionModifiers,

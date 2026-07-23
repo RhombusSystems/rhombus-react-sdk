@@ -1,14 +1,13 @@
 # Rhombus React SDK — `@rhombussystems/react`
 
-React + TypeScript components for embedding **Rhombus camera video** in your own app. The
-SDK streams over two transports — **MPEG-DASH** (Dash.js) and **low-latency H.264 over
-WebSocket** (WebCodecs) — and ships a **unified drop-in player** that combines them with a
-full set of player controls.
+React + TypeScript components for embedding **Rhombus video and audio** in your own app.
+The SDK supports MPEG-DASH video, low-latency H.264, live A100/DR40 Opus audio, and
+historical audio with synchronized wall-clock controls.
 
 Your Rhombus **API key never ships to the browser**. Everything is built around short-lived
 **federated session tokens** minted by your backend (see [Authentication](#authentication--tokens)).
 
-> **Version:** this guide tracks `@rhombussystems/react` **2.0.0**. React **18+**.
+> **Version:** this guide tracks `@rhombussystems/react` **2.1.0**. React **18+**.
 
 ---
 
@@ -28,6 +27,7 @@ Your Rhombus **API key never ships to the browser**. Everything is built around 
   - [Save Clip](#save-clip)
   - [Timeline configuration](#timeline-configuration)
   - [Recipes](#rhombusplayer-recipes)
+- [`RhombusAudioPlayer` — A100 and DR40 audio](#rhombusaudioplayer--a100-and-dr40-audio)
 - [`RhombusBufferedPlayer` — DASH live & VOD](#rhombusbufferedplayer--dash-live--vod)
 - [`RhombusRealtimePlayer` — low-latency live](#rhombusrealtimeplayer--low-latency-live)
 - [`Timeline` — standalone scrubber](#timeline--standalone-scrubber)
@@ -624,6 +624,69 @@ function MyPlayer() {
 
 ---
 
+## `RhombusAudioPlayer` — A100 and DR40 audio
+
+`RhombusAudioPlayer` is the drop-in audio equivalent of `RhombusPlayer`. It uses live Opus
+over WebSocket at the live edge and historical DASH when seeking into the past. Browsers
+without Opus/WebM MSE automatically use the Rhombus two-second Opus segment format and the
+SDK's worker-backed WASM decoder.
+
+```tsx
+import { RhombusAudioPlayer } from "@rhombussystems/react";
+
+<RhombusAudioPlayer
+  source={{ type: "audio-gateway", uuid: "A100_UUID" }}
+  apiOverrideBaseUrl="https://your-api.example.com"
+/>;
+```
+
+Use `{ type: "dr40", uuid }` for a DR40. The source type is explicit because A100 and DR40
+use different Rhombus media-URI endpoints.
+
+The player defaults to live, playing, muted, volume `1`, playback rate `1`, and a 15-second
+rewind step. `playing`, `positionMs`, `playbackRate`, `muted`, and `volume` are controllable.
+The imperative ref exposes the corresponding setters plus `goLive`, `seekTo`, `rewind`, and
+`getState`. Set `controls={[]}` for a headless player or use `renderControls`.
+
+### Synchronized video and audio
+
+```tsx
+import {
+  RhombusAudioPlayer,
+  RhombusPlayer,
+  useRhombusPlaybackController,
+} from "@rhombussystems/react";
+
+function PairedPlayer() {
+  const playback = useRhombusPlaybackController();
+  return (
+    <>
+      <RhombusPlayer
+        cameraUuid="CAMERA_UUID"
+        apiOverrideBaseUrl="https://your-api.example.com"
+        playbackController={playback}
+      />
+      <RhombusAudioPlayer
+        source={{ type: "audio-gateway", uuid: "A100_UUID" }}
+        apiOverrideBaseUrl="https://your-api.example.com"
+        playbackController={playback}
+        controls={["volume"]}
+      />
+    </>
+  );
+}
+```
+
+The video timeline becomes the shared timeline. For a matching DR40 video/audio pair, live
+realtime uses the Opus player; buffered live and VOD use the audio track embedded in the
+DR40 video MPD so the browser does not download the presentation twice.
+
+Browser autoplay rules still apply. Playback starts muted; a user-initiated unmute resumes
+the Web Audio context. Listen-only playback is supported; microphone/talkback is not part
+of this release.
+
+---
+
 ## `RhombusBufferedPlayer` — DASH live & VOD
 
 Renders live or historical footage with Dash.js into a `<video>` element. This is the right
@@ -1075,6 +1138,27 @@ app.post("/api/media-uris", async (req, res) => {
 });
 ```
 
+### Audio media-URI endpoint (proxy mode only)
+
+`RhombusAudioPlayer` posts `{ source: { type, uuid } }` to
+`paths.audioMediaUris` (default `/api/audio-media-uris`). Route
+`type: "audio-gateway"` to `/audiogateway/getMediaUris` with `{ gatewayUuid: uuid }`;
+route `type: "dr40"` to `/doorbellcamera/getMediaUris` with `{ deviceUuid: uuid }`.
+Return the upstream response unchanged. The SDK selects WAN/LAN fields, adds the A100
+`/ws` suffix, and applies federated auth to the WebSocket, MPD, and every segment.
+
+```js
+app.post("/api/audio-media-uris", async (req, res) => {
+  const { type, uuid } = req.body.source;
+  const isGateway = type === "audio-gateway";
+  const path = isGateway
+    ? "/audiogateway/getMediaUris"
+    : "/doorbellcamera/getMediaUris";
+  const body = isGateway ? { gatewayUuid: uuid } : { deviceUuid: uuid };
+  res.json(await postToRhombus(path, body));
+});
+```
+
 ### Footage seekpoints (Timeline, optional)
 
 When `Timeline`/`RhombusPlayer` fetches seekpoints, it `POST`s `paths.footageSeekpoints`
@@ -1107,6 +1191,8 @@ streams the file back.
 **Components**
 
 - `RhombusPlayer` — unified live/VOD player with controls.
+- `RhombusAudioPlayer` — unified A100/DR40 live and historical audio.
+- `RhombusAudioPlayerControls` — reusable audio control bar.
 - `RhombusBufferedPlayer` — DASH live & VOD.
 - `RhombusRealtimePlayer` — realtime H.264 live.
 - `RhombusPlayerControls` — the default control bar (exported for advanced composition).
@@ -1115,11 +1201,16 @@ streams the file back.
 **Constants** (value **and** type — usable as named members or plain strings)
 
 - `RhombusPlayerControl` — `{ Play, GoLive, Rewind, Speed, Zoom, Snapshot, SaveClip, Timeline, LiveType, VideoFit }`.
+- `RhombusAudioPlayerControl` — `{ Play, GoLive, Rewind, Speed, Volume, Timeline }`.
 
 **Types**
 
 - Player props: `RhombusPlayerProps`, `RhombusBufferedPlayerProps`, `RhombusRealtimePlayerProps`,
 `RhombusPlayerBaseProps`, `TimelineProps`.
+- Audio/controller: `RhombusAudioPlayerProps`, `RhombusAudioPlayerHandle`,
+`RhombusAudioPlayerState`, `RhombusAudioSource`, `RhombusAudioTransport`,
+`RhombusPlaybackController`, `RhombusPlaybackControllerOptions`,
+`RhombusPlaybackControllerState`, `RhombusMediaBaseProps`.
 - Handles: `RhombusPlayerHandle`, `RhombusBufferedPlayerHandle`, `RhombusRealtimePlayerHandle`,
 `TimelineHandle`.
 - Unified player: `RhombusPlayerState`, `RhombusPlayerMode`,
@@ -1155,6 +1246,9 @@ streams the file back.
 MSE (Dash.js). Broadest support.
 - `**RhombusRealtimePlayer**` (and `RhombusPlayer`'s default live transport): needs **WebCodecs**
 `VideoDecoder` with H.264 — Chrome, Edge, Safari 16.4+. Firefox H.264 is still limited.
+- `RhombusAudioPlayer`: live audio and decoded VOD require Web Audio, WebAssembly, and Web
+Workers. Historical playback prefers Opus/WebM MSE and automatically falls back to decoded
+Rhombus Opus segments on Safari/iOS and other browsers without that MSE combination.
 
 `RhombusPlayer` feature-detects WebCodecs and **auto-falls back** to buffered live; for the
 low-level players, detect yourself:

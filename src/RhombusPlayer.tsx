@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -20,6 +21,7 @@ import {
 } from "./rhombusClip.js";
 import { chooseVodAnchor, isAtLiveEdge, isWithinWindow, shouldSwitchToLive } from "./playerVodTime.js";
 import { joinUrl } from "./urlAuth.js";
+import { getRhombusPlaybackControllerInternals } from "./useRhombusPlaybackController.js";
 import type {
   RhombusBufferedPlayerHandle,
   RhombusClipExportOptions,
@@ -78,12 +80,13 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
     const {
       cameraUuid,
       connectionMode = "wan",
+      playbackController,
       liveTransport: liveTransportProp,
       videoFit: videoFitProp = "auto",
-      playing: playingProp,
-      playbackRate: playbackRateProp,
+      playing: playingPropInput,
+      playbackRate: playbackRatePropInput,
       zoom: zoomProp,
-      positionMs: positionMsProp,
+      positionMs: positionMsPropInput,
       showLiveTypeSwitcher = false,
       realtimeStreamQuality: realtimeQualityProp = "HD",
       bufferedStreamQuality: bufferedQualityProp = "HIGH",
@@ -102,6 +105,19 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
       className,
       style,
     } = props;
+    const playingProp = playbackController
+      ? playbackController.state.playing &&
+        playbackController.state.status !== "buffering"
+      : playingPropInput;
+    const playbackRateProp =
+      playbackController?.state.playbackRate ?? playbackRatePropInput;
+    const positionMsProp =
+      playbackController?.state.positionMs ?? positionMsPropInput;
+    const participantId = useId();
+    const playbackInternals = playbackController
+      ? getRhombusPlaybackControllerInternals(playbackController)
+      : null;
+    const [, setParticipantRevision] = useState(0);
 
     // ---- resolved live transport (realtime requires WebCodecs) ----
     const requestedTransport: RhombusLiveTransport = liveTransportProp ?? "realtime";
@@ -191,6 +207,57 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
 
     const prevModeRef = useRef(mode);
 
+    useEffect(() => {
+      if (!playbackController) return;
+      const conflicts = [
+        playingPropInput !== undefined ? "playing" : "",
+        playbackRatePropInput !== undefined ? "playbackRate" : "",
+        positionMsPropInput !== undefined ? "positionMs" : "",
+      ].filter(Boolean);
+      if (conflicts.length > 0) {
+        console.warn(
+          `[RhombusPlayer] playbackController overrides: ${conflicts.join(", ")}`
+        );
+      }
+    }, [
+      playbackController,
+      playbackRatePropInput,
+      playingPropInput,
+      positionMsPropInput,
+    ]);
+
+    useEffect(() => {
+      if (!playbackInternals) return;
+      return playbackInternals.subscribeParticipants(() =>
+        setParticipantRevision(value => value + 1)
+      );
+    }, [playbackInternals]);
+
+    useEffect(() => {
+      if (!playbackInternals) return;
+      return playbackInternals.registerParticipant({
+        id: participantId,
+        kind: "video",
+        sourceUuid: cameraUuid,
+        mode,
+        videoTransport: liveTransportState,
+      });
+    }, [cameraUuid, participantId, playbackInternals]);
+
+    useEffect(() => {
+      playbackInternals?.updateParticipant(participantId, {
+        sourceUuid: cameraUuid,
+        mode,
+        videoTransport: liveTransportState,
+      });
+    }, [
+      cameraUuid,
+      liveTransportState,
+      mode,
+      participantId,
+      playbackInternals,
+    ]);
+
     // ---- element accessors ----
     const getVideo = useCallback(() => bufferedHandleRef.current?.getVideoElement() ?? null, []);
     const getCanvas = useCallback(() => realtimeHandleRef.current?.getCanvasElement() ?? null, []);
@@ -237,6 +304,10 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
     }, []);
 
     const goLive = useCallback(() => {
+      if (playbackController && playbackController.state.mode !== "live") {
+        playbackController.goLive();
+        return;
+      }
       desiredPlayingRef.current = true;
       seekTargetRef.current = null;
       lastShownWallClockRef.current = null;
@@ -248,10 +319,17 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
       setCurrentWallClockMs(null);
       setPlaying(true);
       setMode("live");
-    }, []);
+    }, [playbackController]);
 
     const seekTo = useCallback(
       (targetMs: number) => {
+        if (
+          playbackController &&
+          Math.abs(playbackController.state.positionMs - targetMs) > POSITION_DRIFT_MS
+        ) {
+          playbackController.seekTo(targetMs);
+          return;
+        }
         const now = Date.now();
         // A seek preserves the user's play/pause intent: playing keeps playing at the new time,
         // paused stays paused there (reconciled when the possibly-fresh transport becomes ready).
@@ -280,10 +358,14 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
         enterVod(targetMs);
         cbRef.current.onSeek?.(targetMs, "vod");
       },
-      [enterVod, goLive, getVideo]
+      [enterVod, goLive, getVideo, playbackController]
     );
 
     const play = useCallback(() => {
+      if (playbackController && !playbackController.state.playing) {
+        playbackController.play();
+        return;
+      }
       desiredPlayingRef.current = true;
       if (modeRef.current === "vod" || liveTransportRef.current === "buffered") {
         getVideo()?.play().catch(() => {});
@@ -293,9 +375,17 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
         if (modeRef.current !== "live") goLive();
         setPlaying(true);
       }
-    }, [getVideo, goLive]);
+    }, [getVideo, goLive, playbackController]);
 
     const pause = useCallback(() => {
+      if (
+        playbackController &&
+        playbackController.state.playing &&
+        playbackController.state.status !== "buffering"
+      ) {
+        playbackController.pause();
+        return;
+      }
       desiredPlayingRef.current = false;
       if (modeRef.current === "vod" || liveTransportRef.current === "buffered") {
         getVideo()?.pause();
@@ -305,7 +395,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
       // realtime live: freeze by dropping into VOD at ~now, paused once the <video> is ready
       setPlaying(false);
       enterVod(Date.now());
-    }, [enterVod, getVideo]);
+    }, [enterVod, getVideo, playbackController]);
 
     const rewind = useCallback(
       (seconds?: number) => {
@@ -318,12 +408,19 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
 
     const setPlaybackRateImpl = useCallback(
       (rate: number) => {
+        if (
+          playbackController &&
+          playbackController.state.playbackRate !== rate
+        ) {
+          playbackController.setPlaybackRate(rate);
+          return;
+        }
         if (modeRef.current !== "vod") return; // ignored while live
         const v = getVideo();
         if (v) v.playbackRate = rate;
         setPlaybackRate(rate);
       },
-      [getVideo]
+      [getVideo, playbackController]
     );
 
     // ---- zoom / pan ----
@@ -530,6 +627,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
 
     // ---- child ready ----
     const handleChildReady = useCallback(() => {
+      playbackInternals?.reportStatus(participantId, "ready");
       if (!readyFiredRef.current) {
         readyFiredRef.current = true;
         cbRef.current.onReady?.();
@@ -546,7 +644,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
           setPlaying(false);
         }
       }
-    }, [getVideo]);
+    }, [getVideo, participantId, playbackInternals]);
 
     // ---- keep `playing` and `playbackRate` in sync with the <video> element ----
     useEffect(() => {
@@ -555,15 +653,30 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
       const onPlay = () => setPlaying(true);
       const onPause = () => setPlaying(false);
       const onRate = () => setPlaybackRate(v.playbackRate);
+      const onWaiting = () =>
+        playbackInternals?.reportStatus(participantId, "buffering");
+      const onPlaying = () =>
+        playbackInternals?.reportStatus(participantId, "ready");
       v.addEventListener("play", onPlay);
       v.addEventListener("pause", onPause);
       v.addEventListener("ratechange", onRate);
+      v.addEventListener("waiting", onWaiting);
+      v.addEventListener("playing", onPlaying);
       return () => {
         v.removeEventListener("play", onPlay);
         v.removeEventListener("pause", onPause);
         v.removeEventListener("ratechange", onRate);
+        v.removeEventListener("waiting", onWaiting);
+        v.removeEventListener("playing", onPlaying);
       };
-    }, [getVideo, mode, liveTransportState, vodAnchorMs]);
+    }, [
+      getVideo,
+      mode,
+      liveTransportState,
+      participantId,
+      playbackInternals,
+      vodAnchorMs,
+    ]);
 
     // ---- wall-clock ticker (VOD) ----
     useEffect(() => {
@@ -599,20 +712,25 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
             setCurrentWallClockMs(wc);
           }
           cbRef.current.onProgress?.(wc, "vod");
+          playbackInternals?.reportProgress(participantId, wc, "vod");
           if (cfgRef.current.autoGoLiveAtEdge) {
             if (isAtLiveEdge(wc, Date.now(), cfgRef.current.liveEdgeToleranceSec)) goLive();
           }
         }
       }, WALLCLOCK_TICK_MS);
       return () => clearInterval(id);
-    }, [mode, computeWallClock, goLive, getVideo]);
+    }, [mode, computeWallClock, goLive, getVideo, participantId, playbackInternals]);
 
     // ---- progress while live (~1Hz; the VOD ticker handles vod) ----
     useEffect(() => {
       if (mode !== "live") return;
-      const id = setInterval(() => cbRef.current.onProgress?.(Date.now(), "live"), 1_000);
+      const id = setInterval(() => {
+        const now = Date.now();
+        cbRef.current.onProgress?.(now, "live");
+        playbackInternals?.reportProgress(participantId, now, "live");
+      }, 1_000);
       return () => clearInterval(id);
-    }, [mode]);
+    }, [mode, participantId, playbackInternals]);
 
     // ---- onPlaybackRateChange (fires for the built-in control, ref, and native ratechange) ----
     useEffect(() => {
@@ -800,6 +918,24 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
 
     // ---- render the active child ----
     const showRealtime = mode === "live" && liveTransportState === "realtime";
+    const videoOwnsDr40Audio =
+      playbackInternals?.hasMatchingDr40VideoOwner(cameraUuid) ?? false;
+    useEffect(() => {
+      const video = getVideo();
+      if (!video) return;
+      video.muted = videoOwnsDr40Audio
+        ? playbackController?.state.muted ?? true
+        : true;
+      video.volume = videoOwnsDr40Audio
+        ? playbackController?.state.volume ?? 1
+        : 0;
+    }, [
+      getVideo,
+      mode,
+      playbackController?.state.muted,
+      playbackController?.state.volume,
+      videoOwnsDr40Audio,
+    ]);
     const bufferedStartTimeSec =
       mode === "vod" && vodAnchorMs != null ? Math.floor(vodAnchorMs / 1000) : undefined;
 
@@ -846,7 +982,13 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
         seekOffsetSec={vodSeekOffsetSec}
         bufferedStreamQuality={bufferedQuality}
         applyBufferedStreamQuality={applyBufferedStreamQuality}
-        videoProps={{ controls: false, style: mediaStyle }}
+        videoProps={{
+          controls: false,
+          style: mediaStyle,
+          muted: videoOwnsDr40Audio
+            ? playbackController?.state.muted ?? true
+            : true,
+        }}
         onReady={handleChildReady}
       />
     );
@@ -936,6 +1078,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
           {(controls === undefined || controls.includes("timeline")) && (
             <Timeline
               cameraUuid={cameraUuid}
+              playbackController={playbackController}
               className={cx("rhombus-player-timeline", classNames?.timeline)}
               apiOverrideBaseUrl={props.apiOverrideBaseUrl}
               rhombusApiBaseUrl={props.rhombusApiBaseUrl}
