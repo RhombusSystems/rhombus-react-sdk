@@ -2,6 +2,11 @@ export { RhombusBufferedPlayer } from "./RhombusBufferedPlayer.js";
 export { RhombusRealtimePlayer } from "./RhombusRealtimePlayer.js";
 export { RhombusPlayer } from "./RhombusPlayer.js";
 export { RhombusPlayerControls } from "./RhombusPlayerControls.js";
+export { RhombusDateTimePicker } from "./RhombusDateTimePicker.js";
+export type {
+  RhombusDateTimePickerProps,
+  RhombusDateTimePickerClassNames,
+} from "./RhombusDateTimePicker.js";
 export { Timeline } from "./Timeline.js";
 // `RhombusPlayerControl` is a value (named constant) + type — exported as a value so both work.
 export { RhombusPlayerControl } from "./types.js";
@@ -38,6 +43,11 @@ export type {
   TimelineMark,
   TimelineColors,
   RhombusFootageSeekPoint,
+  // Footage availability
+  RhombusFootageWindow,
+  RhombusFootageAvailability,
+  RhombusFootageGap,
+  RhombusRangeCoverage,
 } from "./types.js";
 export { getDefaultRhombusDashSettings, getDefaultRhombusVodDashSettings } from "./dashSettings.js";
 export {
@@ -78,3 +88,13 @@ export type {
   FetchClipProgressOptions,
   BuildClipDownloadUrlOptions,
 } from "./rhombusClip.js";
+export {
+  fetchPresenceWindows,
+  mergeFootageWindows,
+  computeFootageGaps,
+  computeRangeCoverage,
+  FOOTAGE_JOIN_TOLERANCE_MS,
+  FOOTAGE_MIN_GAP_MS,
+  FOOTAGE_LIVE_GRACE_MS,
+} from "./rhombusPresence.js";
+export type { FetchPresenceWindowsOptions } from "./rhombusPresence.js";

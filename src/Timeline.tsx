@@ -1,8 +1,14 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { DEFAULT_RHOMBUS_API_BASE_URL, mergeRequestHeaders } from "./rhombusPlayback.js";
 import { formatClipDuration } from "./playerVodTime.js";
+import { computeFootageGaps, fetchPresenceWindows } from "./rhombusPresence.js";
 import { appendFederatedAuthQueryParams, joinUrl } from "./urlAuth.js";
-import type { RhombusFootageSeekPoint, TimelineColors, TimelineProps } from "./types.js";
+import type {
+  RhombusFootageAvailability,
+  RhombusFootageSeekPoint,
+  TimelineColors,
+  TimelineProps,
+} from "./types.js";
 
 const SELECTION_HANDLE_HIT_PX = 9;
 const DEFAULT_SELECTION_MIN_MS = 5_000;
@@ -44,6 +50,7 @@ const DEFAULT_COLORS: ResolvedTimelineColors = {
   background: undefined,
   availabilityActive: "rgba(120,200,80,0.85)",
   availabilityInactive: "rgba(255,255,255,0.16)",
+  availabilityGap: "rgba(235,90,70,0.85)",
   playhead: "#3b82f6",
   hover: "rgba(255,255,255,0.55)",
   tick: "rgba(255,255,255,0.28)",
@@ -241,6 +248,8 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
     canZoomOut = true,
     fetchSeekPoints = false,
     includeAnyMotion = true,
+    fetchAvailability = false,
+    onAvailabilityLoaded,
     marks,
     onSeekPointsLoaded,
     onError,
@@ -258,6 +267,9 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(0);
   const [seekpoints, setSeekpoints] = useState<RhombusFootageSeekPoint[]>([]);
+  // `null` = availability unknown (off / not yet fetched / all fetches failed) — the bar then
+  // renders the legacy way. Kept stale-while-revalidate: only overwritten by a successful fetch.
+  const [availability, setAvailability] = useState<RhombusFootageAvailability | null>(null);
   const [hoverMs, setHoverMs] = useState<number | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -272,6 +284,8 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
   currentTimeRef.current = currentTimeMs;
   const marksRef = useRef(marks);
   marksRef.current = marks;
+  const availabilityRef = useRef(availability);
+  availabilityRef.current = availability;
   const rangeStartRef = useRef(rangeStartMs);
   rangeStartRef.current = rangeStartMs;
   const rangeEndRef = useRef(rangeEndMs);
@@ -300,6 +314,8 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
   onHoverRef.current = onHoverTimeChange;
   const onLoadedRef = useRef(onSeekPointsLoaded);
   onLoadedRef.current = onSeekPointsLoaded;
+  const onAvailabilityLoadedRef = useRef(onAvailabilityLoaded);
+  onAvailabilityLoadedRef.current = onAvailabilityLoaded;
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
   const onZoomRef = useRef(onZoom);
@@ -376,6 +392,53 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
     refreshKey,
   ]);
 
+  // --- availability fetch (same quantized window as seekpoints) ---
+  useEffect(() => {
+    if (!fetchAvailability) {
+      setAvailability(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const result = await fetchPresenceWindows({
+          apiOverrideBaseUrl,
+          rhombusApiBaseUrl,
+          presenceWindowsPath: paths?.presenceWindows,
+          federatedSessionToken,
+          headers,
+          getRequestHeaders,
+          cameraUuid,
+          startTimeSec: fetchStartSec,
+          durationSec: fetchDurationSec,
+        });
+        if (cancelled) return;
+        setAvailability(result);
+        onAvailabilityLoadedRef.current?.(result);
+      } catch (e) {
+        // Keep the last-known availability (stale beats a flash of unknown); the bar only
+        // claims gaps inside that data's own fetched range, so stale data can't lie.
+        if (cancelled) return;
+        onErrorRef.current?.(e instanceof Error ? e : new Error(String(e)));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    fetchAvailability,
+    apiOverrideBaseUrl,
+    rhombusApiBaseUrl,
+    paths?.presenceWindows,
+    federatedSessionToken,
+    headers,
+    getRequestHeaders,
+    cameraUuid,
+    fetchStartSec,
+    fetchDurationSec,
+    refreshKey,
+  ]);
+
   // --- draw (reads refs + drawRangeRef so it is stable across renders) ---
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -410,7 +473,9 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
     const spBottom = axisY - 6;
     const rowGap = 2;
 
-    // Availability bar.
+    // Availability bar: past renders active, then confirmed no-footage gaps are painted over
+    // it. `computeFootageGaps` only claims gaps inside its data's fetched range (and before the
+    // live-edge grace window), so unfetched/unknown regions keep the legacy all-active look.
     ctx.fillStyle = c.availabilityInactive;
     ctx.fillRect(0, axisY, w, barH);
     const activeEnd = Math.min(end, now);
@@ -418,6 +483,15 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
       ctx.fillStyle = c.availabilityActive;
       const x = timeToX(start);
       ctx.fillRect(x, axisY, timeToX(activeEnd) - x, barH);
+    }
+    const availability = availabilityRef.current;
+    if (availability && activeEnd > start) {
+      ctx.fillStyle = c.availabilityGap;
+      for (const gap of computeFootageGaps(availability, start, activeEnd, now)) {
+        const gx = timeToX(gap.startMs);
+        const gw = Math.max(1, timeToX(gap.endMs) - gx);
+        ctx.fillRect(gx, axisY, gw, barH);
+      }
     }
 
     // Tick marks + labels.
@@ -511,7 +585,7 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
   // Redraw on non-range state changes (uses the current animated range).
   useEffect(() => {
     draw();
-  }, [draw, width, height, currentTimeMs, hoverMs, seekpoints, marks, theme, selection]);
+  }, [draw, width, height, currentTimeMs, hoverMs, seekpoints, availability, marks, theme, selection]);
 
   // Animate the drawn range toward the target range whenever the props change.
   useEffect(() => {
