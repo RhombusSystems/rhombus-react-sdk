@@ -16,6 +16,9 @@ const mocks = vi.hoisted(() => ({
     play: ReturnType<typeof vi.fn>;
     setMuted: ReturnType<typeof vi.fn>;
   }>,
+  dashElement: null as HTMLMediaElement | null,
+  onDashAttach: null as (() => void) | null,
+  dashAttachSource: vi.fn(),
 }));
 
 vi.mock("./audioPcmEngine.js", () => ({
@@ -45,8 +48,13 @@ vi.mock("./dashjsRuntime.js", () => {
     updateSettings: vi.fn(),
     on: vi.fn(),
     off: vi.fn(),
-    initialize: vi.fn(),
-    attachSource: vi.fn(),
+    initialize: vi.fn((element: HTMLMediaElement) => {
+      mocks.dashElement = element;
+    }),
+    attachSource: vi.fn((...args: unknown[]) => {
+      mocks.dashAttachSource(...args);
+      mocks.onDashAttach?.();
+    }),
     reset: vi.fn(),
   }));
   return {
@@ -86,12 +94,18 @@ const mediaResponse = {
 beforeEach(() => {
   MockWebSocket.instances = [];
   mocks.engines.length = 0;
+  mocks.dashElement = null;
+  mocks.onDashAttach = null;
+  mocks.dashAttachSource.mockReset();
   vi.stubGlobal("WebSocket", MockWebSocket);
   vi.stubGlobal("MediaSource", undefined);
+  vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+  vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
 });
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -287,5 +301,58 @@ describe("RhombusAudioPlayer transports", () => {
     view.unmount();
     expect(historicalSignal?.aborted).toBe(true);
     expect(mocks.engines[mocks.engines.length - 1]?.destroy).toHaveBeenCalled();
+  });
+
+  it("clears shared buffering when Dash becomes playable during source attachment", async () => {
+    vi.stubGlobal("MediaSource", {
+      isTypeSupported: vi.fn().mockReturnValue(true),
+    });
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(mediaResponse), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const onReady = vi.fn();
+    const onStatusChange = vi.fn();
+    const onError = vi.fn();
+    vi.mocked(HTMLMediaElement.prototype.play).mockRejectedValue(
+      new DOMException("Autoplay requires a user gesture", "NotAllowedError")
+    );
+    mocks.onDashAttach = () => {
+      mocks.dashElement?.dispatchEvent(new Event("waiting"));
+      mocks.dashElement?.dispatchEvent(new Event("canplay"));
+    };
+
+    const view = render(
+      <RhombusAudioPlayer
+        source={{ type: "audio-gateway", uuid: "gateway-1" }}
+        federatedSessionToken="history-token"
+        initialMode="vod"
+        initialStartTimeMs={1_700_000_000_000}
+        controls={["volume"]}
+        onReady={onReady}
+        onStatusChange={onStatusChange}
+        onError={onError}
+      />
+    );
+
+    await waitFor(() => expect(mocks.dashAttachSource).toHaveBeenCalled());
+    await waitFor(() => expect(onReady).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(onStatusChange).toHaveBeenLastCalledWith("ready")
+    );
+    expect(HTMLMediaElement.prototype.play).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Unmute audio" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Mute audio" })).toBeTruthy()
+    );
+    expect(onError).not.toHaveBeenCalled();
+    expect(
+      view.container
+        .querySelector("[data-rhombus-audio-transport]")
+        ?.getAttribute("data-rhombus-audio-transport")
+    ).toBe("dash-vod");
   });
 });

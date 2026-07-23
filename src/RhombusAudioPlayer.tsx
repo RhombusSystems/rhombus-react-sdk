@@ -143,6 +143,13 @@ export const RhombusAudioPlayer = forwardRef<
     },
     [controllerInternals, participantId]
   );
+  const reportPlaybackStartError = useCallback(
+    (error: unknown) => {
+      if (isAutoplayBlocked(error)) return;
+      reportError(error);
+    },
+    [reportError]
+  );
 
   useEffect(() => {
     setForceDecodedVod(false);
@@ -530,9 +537,29 @@ export const RhombusAudioPlayer = forwardRef<
     const element = audioElementRef.current;
     const player = MediaPlayer().create();
     dashPlayerRef.current = player;
+    let didNotifyReady = false;
     const onError = (_event: DashErrorEvent) => {
       setForceDecodedVod(true);
     };
+    const onCanPlay = () => {
+      controllerInternals.reportStatus(participantId, "ready");
+      if (!didNotifyReady) {
+        didNotifyReady = true;
+        propsRef.current.onReady?.();
+      }
+      if (
+        controller.state.playing &&
+        controller.state.status !== "buffering"
+      ) {
+        // Readiness may arrive after the seek gesture has expired. Browsers can
+        // reject this autoplay attempt even for a healthy, fully buffered
+        // transport; the next user Play/Unmute action retries synchronously.
+        void element.play().catch(() => {});
+      }
+    };
+    const onWaiting = () =>
+      controllerInternals.reportStatus(participantId, "buffering");
+
     player.extend(
       "RequestModifier",
       () => ({
@@ -551,24 +578,23 @@ export const RhombusAudioPlayer = forwardRef<
       ),
       token
     );
+    element.addEventListener("canplay", onCanPlay);
+    element.addEventListener("canplaythrough", onCanPlay);
+    element.addEventListener("playing", onCanPlay);
+    element.addEventListener("waiting", onWaiting);
+    controllerInternals.reportStatus(participantId, "buffering");
     player.initialize(element, undefined, false);
     player.attachSource(manifest, vodAnchor.seekOffsetSec || undefined);
-    const onCanPlay = () => {
-      controllerInternals.reportStatus(participantId, "ready");
-      propsRef.current.onReady?.();
-      if (
-        controller.state.playing &&
-        controller.state.status !== "buffering"
-      ) {
-        void element.play().catch(reportError);
-      }
-    };
-    const onWaiting = () =>
-      controllerInternals.reportStatus(participantId, "buffering");
-    element.addEventListener("canplay", onCanPlay);
-    element.addEventListener("waiting", onWaiting);
+    // Dash.js can make a cached manifest/segment playable during attachSource,
+    // before the browser queues another media event. Do not leave a fully
+    // buffered element stuck behind the shared group's buffering gate.
+    if (element.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+      queueMicrotask(onCanPlay);
+    }
     return () => {
       element.removeEventListener("canplay", onCanPlay);
+      element.removeEventListener("canplaythrough", onCanPlay);
+      element.removeEventListener("playing", onCanPlay);
       element.removeEventListener("waiting", onWaiting);
       try {
         player.off(MediaPlayer.events.ERROR, onError, undefined);
@@ -730,13 +756,18 @@ export const RhombusAudioPlayer = forwardRef<
         }
         if (action === "unmute" && !controller.state.playing) return;
         const engine = engineRef.current;
-        if (engine) void engine.play().catch(reportError);
+        if (engine) void engine.play().catch(reportPlaybackStartError);
         const element = audioElementRef.current;
         if (element && resolvedTransport === "dash-vod") {
-          void element.play().catch(reportError);
+          void element.play().catch(reportPlaybackStartError);
         }
       }),
-    [controller, controllerInternals, reportError, resolvedTransport]
+    [
+      controller,
+      controllerInternals,
+      reportPlaybackStartError,
+      resolvedTransport,
+    ]
   );
 
   // Progress and follower drift correction.
@@ -906,4 +937,13 @@ export const RhombusAudioPlayer = forwardRef<
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isAutoplayBlocked(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    (error as { name?: unknown }).name === "NotAllowedError"
+  );
 }

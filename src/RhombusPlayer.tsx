@@ -750,19 +750,26 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
       const onRate = () => setPlaybackRate(v.playbackRate);
       const onWaiting = () =>
         playbackInternals?.reportStatus(participantId, "buffering");
-      const onPlaying = () =>
+      const onReadyToPlay = () =>
         playbackInternals?.reportStatus(participantId, "ready");
       v.addEventListener("play", onPlay);
       v.addEventListener("pause", onPause);
       v.addEventListener("ratechange", onRate);
       v.addEventListener("waiting", onWaiting);
-      v.addEventListener("playing", onPlaying);
+      v.addEventListener("canplay", onReadyToPlay);
+      v.addEventListener("canplaythrough", onReadyToPlay);
+      v.addEventListener("playing", onReadyToPlay);
+      if (v.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+        playbackInternals?.reportStatus(participantId, "ready");
+      }
       return () => {
         v.removeEventListener("play", onPlay);
         v.removeEventListener("pause", onPause);
         v.removeEventListener("ratechange", onRate);
         v.removeEventListener("waiting", onWaiting);
-        v.removeEventListener("playing", onPlaying);
+        v.removeEventListener("canplay", onReadyToPlay);
+        v.removeEventListener("canplaythrough", onReadyToPlay);
+        v.removeEventListener("playing", onReadyToPlay);
       };
     }, [
       getVideo,

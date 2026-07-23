@@ -29,6 +29,17 @@ Your Rhombus **API key never ships to the browser**. Everything is built around 
   - [Timeline configuration](#timeline-configuration)
   - [Recipes](#rhombusplayer-recipes)
 - [`RhombusAudioPlayer` — A100 and DR40 audio](#rhombusaudioplayer--a100-and-dr40-audio)
+  - [Audio sources and device UUIDs](#audio-sources-and-device-uuids)
+  - [Standalone live audio](#standalone-live-audio)
+  - [Live and historical transports](#live-and-historical-audio-transports)
+  - [Audio props](#rhombusaudioplayer-props)
+  - [Built-in, selective, and custom controls](#built-in-selective-and-custom-audio-controls)
+  - [Imperative and controlled playback](#imperative-and-controlled-audio-playback)
+  - [Shared video/audio playback](#shared-videoaudio-playback)
+  - [DR40 audio ownership](#dr40-audio-ownership)
+  - [Callbacks, state, and recovery](#audio-callbacks-state-and-recovery)
+  - [Authentication and network modes](#audio-authentication-and-network-modes)
+  - [Styling and browser behavior](#audio-styling-and-browser-behavior)
 - [`RhombusBufferedPlayer` — DASH live & VOD](#rhombusbufferedplayer--dash-live--vod)
 - [`RhombusRealtimePlayer` — low-latency live](#rhombusrealtimeplayer--low-latency-live)
 - [`Timeline` — standalone scrubber](#timeline--standalone-scrubber)
@@ -40,6 +51,7 @@ Your Rhombus **API key never ships to the browser**. Everything is built around 
 - [Exported API surface](#exported-api-surface)
 - [Browser support](#browser-support)
 - [Troubleshooting](#troubleshooting)
+- [Migrating from 2.0 → 2.1](#migrating-from-20--21)
 - [Migrating from 1.x → 2.0](#migrating-from-1x--20)
 - [License](#license)
 
@@ -53,7 +65,8 @@ npm install @rhombussystems/react
 ```
 
 - `react` and `react-dom` (**>= 18**) are **peer dependencies** — install them in your app.
-- `**dashjs`** is bundled (used for DASH playback) — you do not install it separately.
+- **`dashjs`** and the worker-backed Opus decoder are bundled — you do not install them
+  separately.
 - The realtime/canvas path uses the browser **WebCodecs** `VideoDecoder` (Chrome, Edge,
 Safari 16.4+; Firefox H.264 is still limited) — no extra dependency.
 
@@ -83,7 +96,7 @@ export function CameraView() {
 
 > ⚠️ **Server setup is required.** The SDK calls *your* origin for a token. Your server must
 > expose `POST /api/federated-token` (the default path) or set `paths.federatedToken` to your
-> route. Built-in **Save Clip** additionally needs a few proxy routes. See the
+> route. Built-in **Save Clip** and proxy-mode audio additionally need media proxy routes. See the
 > [Backend contract](#backend-contract).
 
   
@@ -91,6 +104,8 @@ Prefer to compose your own layout? Drop down to the individual building blocks �
 
 - **[`RhombusBufferedPlayer`](#rhombusbufferedplayer--dash-live--vod)** — MPEG-DASH live & VOD on a real `<video>` element; native pause/seek, widest browser support.
 - **[`RhombusRealtimePlayer`](#rhombusrealtimeplayer--low-latency-live)** — sub-second live H.264 over WebSocket, decoded with WebCodecs onto a `<canvas>` (live only).
+- **[`RhombusAudioPlayer`](#rhombusaudioplayer--a100-and-dr40-audio)** — A100/DR40 live
+  Opus and historical audio, standalone or synchronized with video.
 
 ---
 
@@ -99,14 +114,16 @@ Prefer to compose your own layout? Drop down to the individual building blocks �
 
 | Component                   | Transport                                                             | Live latency    | Live | Past (VOD) | Controls               |
 | --------------------------- | --------------------------------------------------------------------- | --------------- | ---- | ---------- | ---------------------- |
-| `**RhombusPlayer**`         | both — realtime canvas for live, DASH for VOD, switched automatically | sub-second live | ✅    | ✅          | ✅ full bar + `ref` API |
-| `**RhombusBufferedPlayer**` | MPEG-DASH (Dash.js) on a `<video>`                                    | ~few seconds    | ✅    | ✅          | native `<video>`       |
-| `**RhombusRealtimePlayer**` | H.264 / WebSocket → WebCodecs → `<canvas>`                            | sub-second      | ✅    | ❌          | none (always live)     |
-| `**Timeline**`              | none — a canvas scrubber you pair with any video                      | —               | —    | —          | seek UI only           |
+| **`RhombusPlayer`**         | both — realtime canvas for live, DASH for VOD, switched automatically | sub-second live | ✅    | ✅          | ✅ full bar + `ref` API |
+| `RhombusAudioPlayer`        | live Opus + historical DASH/decoded Opus                              | sub-second live | ✅    | ✅          | ✅ full bar + `ref` API |
+| **`RhombusBufferedPlayer`** | MPEG-DASH (Dash.js) on a `<video>`                                    | ~few seconds    | ✅    | ✅          | native `<video>`       |
+| **`RhombusRealtimePlayer`** | H.264 / WebSocket → WebCodecs → `<canvas>`                            | sub-second      | ✅    | ❌          | none (always live)     |
+| **`Timeline`**              | none — a canvas scrubber you pair with any media                      | —               | —    | —          | seek UI only           |
 
 
-**Rule of thumb:** reach for `**RhombusPlayer`** first — it's the drop-in. Drop down to the
-individual players when you want to compose your own layou or have a single source of truth for your playback time and playback state (ex: video walls).  
+**Rule of thumb:** reach for `RhombusPlayer` first for video and `RhombusAudioPlayer` for
+audio. Add a shared controller when multiple media participants need one source of truth for
+playback time and state.
 
 ---
 
@@ -159,13 +176,14 @@ common to all players.)
 | `connectionMode`             | `"wan" | "lan"`                                       | —        | `"wan"`                               | Which `getMediaUris` URIs to use. See [WAN vs LAN](#wan-vs-lan).                                                                                                           |
 | `apiOverrideBaseUrl`         | `string`                                              | —        | —                                     | Base for the token **and** media requests (proxy mode). Required for built-in [Save Clip](#save-clip). When omitted, media is fetched directly from Rhombus.               |
 | `rhombusApiBaseUrl`          | `string`                                              | —        | `https://api2.rhombussystems.com/api` | Rhombus REST base when `apiOverrideBaseUrl` is omitted.                                                                                                                    |
-| `paths`                      | `{ federatedToken?, mediaUris?, footageSeekpoints?, presenceWindows? }` | —        | see [backend](#backend-contract)      | Override route paths.                                                                                                                                                      |
+| `paths`                      | `RhombusPlayerPaths`                                  | —        | see [backend](#backend-contract)      | Override video, audio, token, seekpoint, and availability routes.                                                                                                          |
 | `federatedSessionToken`      | `string`                                              | —        | —                                     | Supply & rotate your own token; the SDK skips its token endpoint.                                                                                                          |
 | `tokenDurationSec`           | `number`                                              | —        | `86400`                               | Requested token TTL (SDK-managed mode).                                                                                                                                    |
 | `headers`                    | `HeadersInit`                                         | —        | —                                     | Static headers for the token request (+ media when `apiOverrideBaseUrl` set).                                                                                              |
 | `getRequestHeaders`          | `() => HeadersInit | Promise<…>`                      | —        | —                                     | Async headers merged after `headers`.                                                                                                                                      |
 | `maxRetryIntervalMs`         | `number`                                              | —        | `30000`                               | Auto-recovery backoff ceiling. `0` disables.                                                                                                                               |
 | `stallTimeoutMs`             | `number`                                              | —        | `12000`                               | Stall watchdog. `0` disables.                                                                                                                                              |
+| `playbackController`         | `RhombusPlaybackController`                           | —        | private controller                    | Join one video and one audio participant. Controller playhead/rate/mute/volume state takes precedence over equivalent player props.                                         |
 | `liveTransport`              | `"realtime" | "buffered"`                             | —        | `"realtime"`                          | Live transport. **Controllable**. Auto-falls back to `buffered` without WebCodecs.                                                                                         |
 | `videoFit`                   | `"contain" | "cover" | "fill" | "auto"`               | —        | `"auto"`                              | How the video fills its area. **Controllable**; built-in `"videoFit"` control changes it. See [Video display / fit](#video-display--fit).                                  |
 | `onVideoFitChange`           | `(fit) => void`                                       | —        | —                                     | Fired when the video-display fit changes.                                                                                                                                  |
@@ -331,17 +349,22 @@ members — whichever you prefer:
 ```tsx
 import { RhombusPlayer, RhombusPlayerControl } from "@rhombussystems/react";
 
-// All controls — omit the prop entirely:
-<RhombusPlayer cameraUuid="…" />
+<>
+  {/* All controls — omit the prop entirely: */}
+  <RhombusPlayer cameraUuid="…" />
 
-// A subset — plain strings:
-<RhombusPlayer cameraUuid="…" controls={["play", "timeline"]} />
+  {/* A subset — plain strings: */}
+  <RhombusPlayer cameraUuid="…" controls={["play", "timeline"]} />
 
-// …or the named constant (autocompletes, refactor-safe):
-<RhombusPlayer cameraUuid="…" controls={[RhombusPlayerControl.Play, RhombusPlayerControl.Timeline]} />
+  {/* …or the named constant (autocompletes, refactor-safe): */}
+  <RhombusPlayer
+    cameraUuid="…"
+    controls={[RhombusPlayerControl.Play, RhombusPlayerControl.Timeline]}
+  />
 
-// Headless — no built-in UI at all; drive everything through the ref:
-<RhombusPlayer ref={player} cameraUuid="…" controls={[]} />
+  {/* Headless — no built-in UI at all; drive everything through the ref: */}
+  <RhombusPlayer ref={player} cameraUuid="…" controls={[]} />
+</>
 ```
 
 ### Go to date (`"goToDate"` control / `RhombusDateTimePicker`)
@@ -703,29 +726,373 @@ function MyPlayer() {
 
 ## `RhombusAudioPlayer` — A100 and DR40 audio
 
-`RhombusAudioPlayer` is the drop-in audio equivalent of `RhombusPlayer`. It uses live Opus
-over WebSocket at the live edge and historical DASH when seeking into the past. Browsers
-without Opus/WebM MSE automatically use the Rhombus two-second Opus segment format and the
-SDK's worker-backed WASM decoder.
+`RhombusAudioPlayer` is the drop-in audio equivalent of `RhombusPlayer`. It plays an A100
+audio gateway or DR40 by absolute wall-clock time, switches between live and historical
+audio, and can either own its controls or participate in the same controller and timeline as
+video.
+
+Use it for:
+
+- standalone live A100 or DR40 listening;
+- standalone historical audio with rewind, pause, speed, and epoch-ms seeking;
+- synchronized camera video plus independent A100 audio;
+- synchronized DR40 video/audio without downloading or playing the DR40 audio twice;
+- a headless audio engine controlled by application UI;
+- one external timeline controlling both a video and audio participant.
+
+This release is **listen-only**. Browser microphone capture, talkback, DSP/equalizer controls,
+and multiple simultaneous audible tracks on one shared controller are outside the 2.1 API.
+
+### Audio sources and device UUIDs
+
+Sources are explicit so the SDK can select the correct Rhombus endpoint and request body:
+
+```ts
+import type { RhombusAudioSource } from "@rhombussystems/react";
+
+const a100: RhombusAudioSource = {
+  type: "audio-gateway",
+  uuid: "A100_AUDIO_GATEWAY_UUID",
+};
+
+const dr40: RhombusAudioSource = {
+  type: "dr40",
+  uuid: "DR40_DEVICE_UUID",
+};
+```
+
+- `"audio-gateway"` calls `/audiogateway/getMediaUris` with
+  `{ gatewayUuid: source.uuid }`.
+- `"dr40"` calls `/doorbellcamera/getMediaUris` with
+  `{ deviceUuid: source.uuid }`.
+- An A100 UUID is the **audio gateway UUID**, not an associated camera UUID.
+- A source must be visible to the organization represented by the API key or federated token.
+  An unknown or cross-organization UUID produces no usable media URIs.
+
+The SDK intentionally does not include a device-list UI. Most applications select devices
+from their own inventory. A backend-powered picker can use Rhombus
+`/audiogateway/getMinimalAudioGatewayStateList` for A100s and
+`/doorbellcamera/getMinimalStateList` for DR40s; keep the API key server-side.
+
+### Standalone live audio
+
+The smallest complete player is:
 
 ```tsx
 import { RhombusAudioPlayer } from "@rhombussystems/react";
 
+export function LobbyAudio() {
+  return (
+    <RhombusAudioPlayer
+      source={{ type: "audio-gateway", uuid: "A100_UUID" }}
+      apiOverrideBaseUrl="https://your-api.example.com"
+    />
+  );
+}
+```
+
+Omit `apiOverrideBaseUrl` only when your application uses
+[direct federated-token mode](#audio-authentication-and-network-modes).
+
+The uncontrolled defaults are:
+
+- mode `"live"`;
+- playing `true`;
+- **muted `true`** (for reliable browser autoplay);
+- volume `1` on a linear `0–1` scale;
+- playback rate `1`;
+- 15-second rewind;
+- five-second live-edge tolerance;
+- no automatic return to live when historical playback reaches the edge.
+
+The user must select **Unmute** to hear audio. Play and unmute actions resume Web Audio
+synchronously inside the user gesture so Chrome, Edge, Safari, and iOS can authorize output.
+Do not default a production page to audible autoplay: browsers may block it and users
+generally expect embedded surveillance media to start silent.
+
+Use a DR40 the same way:
+
+```tsx
 <RhombusAudioPlayer
-  source={{ type: "audio-gateway", uuid: "A100_UUID" }}
+  source={{ type: "dr40", uuid: dr40Uuid }}
+  apiOverrideBaseUrl="/"
+/>
+```
+
+`apiOverrideBaseUrl="/"` uses the default proxy routes on the current origin.
+The shorter recipes below omit repeated auth props where they are not the subject; use the
+same proxy configuration in production unless the recipe explicitly demonstrates direct
+mode.
+
+### Live and historical audio transports
+
+The component selects an internal transport; consumers normally observe it but do not choose
+it directly:
+
+| `state.transport` | When it is used | Output path |
+| --- | --- | --- |
+| `"opus-live"` | Live A100/DR40 audio | Opus WebSocket → worker-backed WASM decoder → Web Audio |
+| `"dash-vod"` | Historical audio when Opus/WebM MSE is supported | Dash.js → hidden `<audio>` element |
+| `"decoded-vod"` | Safari/iOS capability fallback or recoverable DASH failure | Rhombus two-second Opus segments → WASM → Web Audio |
+| `"embedded-dr40"` | A matching DR40 video owns buffered/VOD audio | The `RhombusPlayer` video element |
+
+Live A100 and DR40 streams carry Opus frames at mono 48 kHz. The player parses Rhombus TLV
+records, tracks their epoch-ms timestamps, maintains a bounded jitter buffer, and discards
+isolated non-TLV A100 startup packets. Repeated malformed packets are treated as stream
+corruption and trigger recovery.
+
+Historical mode prefers MSE/Dash.js. If
+`MediaSource.isTypeSupported('audio/webm; codecs="opus"')` is false—or DASH initialization
+fails—the decoded transport fetches the Rhombus segment format, keeps roughly ten seconds
+buffered, and schedules PCM through the same Web Audio graph as live playback.
+
+Start directly in history:
+
+```tsx
+const fiveMinutesAgo = Date.now() - 5 * 60_000;
+
+<RhombusAudioPlayer
+  source={{ type: "audio-gateway", uuid: a100Uuid }}
   apiOverrideBaseUrl="https://your-api.example.com"
+  initialMode="vod"
+  initialStartTimeMs={fiveMinutesAgo}
+  vodWindowSec={30 * 60}
+/>
+```
+
+All public positions are Unix epoch **milliseconds**. MPD template parameters are converted
+to seconds internally. If `initialMode="vod"` is supplied without `initialStartTimeMs`, the
+initial target is approximately one minute before now.
+
+### `RhombusAudioPlayer` props
+
+`source` is the only audio-specific required prop. Authentication and resilience properties
+come from `RhombusMediaBaseProps`.
+
+| Prop | Type | Default | Purpose |
+| --- | --- | --- | --- |
+| `source` | `RhombusAudioSource` | required | A100 or DR40 identity. |
+| `connectionMode` | `"wan" \| "lan"` | `"wan"` | Select WAN or the first usable LAN media URI. |
+| `apiOverrideBaseUrl` | `string` | direct mode | Base URL for token and audio-media proxy routes. Proxy mode is recommended. |
+| `rhombusApiBaseUrl` | `string` | Rhombus production API | Direct-mode REST base. |
+| `paths` | `RhombusPlayerPaths` | SDK defaults | Override token, proxy, A100-direct, or DR40-direct paths. |
+| `federatedSessionToken` | `string` | SDK-managed | Supply and rotate a token yourself. |
+| `tokenDurationSec` | `number` | `86400` | Requested SDK-managed token TTL. |
+| `headers` | `HeadersInit` | — | Static headers for your token/proxy endpoints. |
+| `getRequestHeaders` | `() => HeadersInit \| Promise<HeadersInit>` | — | Resolve fresh application headers per request. |
+| `maxRetryIntervalMs` | `number` | `30000` | Live reconnect backoff ceiling; `0` disables reconnects. |
+| `stallTimeoutMs` | `number` | `12000` | Recover a live socket with no messages; `0` disables. |
+| `playbackController` | `RhombusPlaybackController` | private controller | Join video/audio/timeline playback state. |
+| `playing` | `boolean` | `true` | Controlled play/pause without an external controller. |
+| `positionMs` | `number` | current/initial time | Controlled epoch-ms playhead without an external controller. |
+| `playbackRate` | `number` | `1` | Controlled historical playback rate. |
+| `muted` | `boolean` | `true` | Controlled mute state. |
+| `volume` | `number` | `1` | Controlled linear gain, clamped to `0–1`. |
+| `initialMode` | `"live" \| "vod"` | `"live"` | Initial uncontrolled mode. |
+| `initialStartTimeMs` | `number` | about 60s ago in VOD | Initial historical wall-clock target. |
+| `vodWindowSec` | `number` | `7200` | Requested historical manifest/segment window. |
+| `defaultRewindSec` | `number` | `15` | Default `rewind()` and control-bar step. |
+| `liveEdgeToleranceSec` | `number` | `5` | A seek this close to now becomes live. |
+| `autoGoLiveAtEdge` | `boolean` | `false` | Return to live when VOD catches the edge. |
+| `controls` | `RhombusAudioPlayerControl[]` | all | Select built-ins; `[]` is fully headless. |
+| `renderControls` | `(api, state) => ReactNode` | built-in bar | Replace the audio control bar. |
+| `classNames` | `RhombusAudioPlayerClassNames` | — | Add classes to control-bar slots. |
+| `timeline` | `RhombusPlayerTimelineConfig` | 24h window | Configure audio timeline span, marks, colors, and height. |
+| `className` / `style` | React root props | — | Style the component root. |
+| `onReady` | `() => void` | — | Owned live socket or Dash.js VOD is ready; may repeat after reconnect/reinit. Use status callbacks for decoded/embedded audio. |
+| `onError` | `(error: Error) => void` | — | Token, URI, decoder, segment, or transport failure. |
+| `onRecoveryAttempt` | `(attempt, error) => void` | — | Live socket retry notification. |
+
+If `playbackController` is supplied, it takes precedence over `playing`, `positionMs`,
+`playbackRate`, `muted`, and `volume`. Passing both is allowed for migration, but the SDK
+emits a development warning because the per-player values cannot win.
+
+### Built-in, selective, and custom audio controls
+
+With `controls` omitted, the player renders rewind, play/pause, Go Live, speed, mute/volume,
+and a wall-clock timeline. Select only the controls your layout needs:
+
+```tsx
+import {
+  RhombusAudioPlayer,
+  RhombusAudioPlayerControl,
+} from "@rhombussystems/react";
+
+<RhombusAudioPlayer
+  source={source}
+  controls={[
+    RhombusAudioPlayerControl.Play,
+    RhombusAudioPlayerControl.Volume,
+    RhombusAudioPlayerControl.Timeline,
+  ]}
+/>;
+
+// Plain strings are equally valid:
+<RhombusAudioPlayer source={source} controls={["play", "volume"]} />;
+```
+
+Available identifiers are `"play"`, `"goLive"`, `"rewind"`, `"speed"`, `"volume"`, and
+`"timeline"`. The speed picker is disabled at the live edge; Go Live is disabled while live.
+Omitting `"timeline"` removes the timeline. `controls={[]}` renders no SDK UI.
+
+Replace the bar but keep player-managed state:
+
+```tsx
+<RhombusAudioPlayer
+  source={source}
+  renderControls={(api, state) => (
+    <div className="my-audio-controls">
+      <button onClick={() => (state.playing ? api.pause() : api.play())}>
+        {state.playing ? "Pause" : "Play"}
+      </button>
+      <button onClick={() => api.setMuted(!state.muted)}>
+        {state.muted ? "Unmute" : "Mute"}
+      </button>
+      <button onClick={() => api.rewind(30)}>Back 30s</button>
+      <span>{state.status}</span>
+    </div>
+  )}
 />;
 ```
 
-Use `{ type: "dr40", uuid }` for a DR40. The source type is explicit because A100 and DR40
-use different Rhombus media-URI endpoints.
+`renderControls` replaces the toolbar, but the built-in timeline still renders while
+`"timeline"` is selected (including the default `controls={undefined}`). Pass a control list
+without `"timeline"` if the custom layout renders its own timeline.
 
-The player defaults to live, playing, muted, volume `1`, playback rate `1`, and a 15-second
-rewind step. `playing`, `positionMs`, `playbackRate`, `muted`, and `volume` are controllable.
-The imperative ref exposes the corresponding setters plus `goLive`, `seekTo`, `rewind`, and
-`getState`. Set `controls={[]}` for a headless player or use `renderControls`.
+`RhombusAudioPlayerControls` and `RhombusAudioPlayerControlsProps` are also exported for
+layouts that store `onStateChange` state and render the stock bar elsewhere:
 
-### Synchronized video and audio
+```tsx
+import { useState } from "react";
+import {
+  RhombusAudioPlayer,
+  RhombusAudioPlayerControls,
+  type RhombusAudioPlayerHandle,
+  type RhombusAudioPlayerState,
+} from "@rhombussystems/react";
+
+function AudioWithDetachedControls() {
+  const [api, setApi] = useState<RhombusAudioPlayerHandle | null>(null);
+  const [state, setState] = useState<RhombusAudioPlayerState | null>(null);
+
+  return (
+    <>
+      <RhombusAudioPlayer
+        ref={setApi}
+        source={{ type: "audio-gateway", uuid: "A100_UUID" }}
+        apiOverrideBaseUrl="/"
+        controls={[]}
+        onStateChange={setState}
+      />
+      {api && state ? (
+        <RhombusAudioPlayerControls
+          api={api}
+          state={state}
+          controls={["play", "volume"]}
+        />
+      ) : null}
+    </>
+  );
+}
+```
+
+The built-in audio timeline uses wall-clock time and does not fetch camera event seekpoints.
+Its supported inline configuration is `windowSec`, `marks`, `colors`, and `height`. For
+camera seekpoints, availability, window shifting, or zoom controls, render a standalone
+[`Timeline`](#timeline--standalone-scrubber) with the same `playbackController`.
+
+### Imperative and controlled audio playback
+
+Use the ref API when commands originate from buttons, keyboard shortcuts, or application
+events:
+
+```tsx
+import { useRef } from "react";
+import {
+  RhombusAudioPlayer,
+  type RhombusAudioPlayerHandle,
+  type RhombusAudioSource,
+} from "@rhombussystems/react";
+
+function ImperativeAudio({ source }: { source: RhombusAudioSource }) {
+  const audio = useRef<RhombusAudioPlayerHandle>(null);
+
+  return (
+    <>
+      <RhombusAudioPlayer ref={audio} source={source} controls={[]} />
+      <button onClick={() => audio.current?.play()}>Play</button>
+      <button onClick={() => audio.current?.pause()}>Pause</button>
+      <button onClick={() => audio.current?.setMuted(false)}>Unmute</button>
+      <button onClick={() => audio.current?.seekTo(Date.now() - 60_000)}>
+        One minute ago
+      </button>
+      <button onClick={() => audio.current?.goLive()}>Go Live</button>
+    </>
+  );
+}
+```
+
+The complete `RhombusAudioPlayerHandle` is:
+
+| Method | Effect |
+| --- | --- |
+| `play()` / `pause()` | Resume or suspend playback. User-triggered `play()` unlocks browser audio. |
+| `goLive()` | Switch to live, reset rate to `1`, and resume. |
+| `seekTo(epochMs)` | Seek to absolute wall-clock time; near-now targets become live. |
+| `rewind(seconds?)` | Enter VOD and move back by the argument or `defaultRewindSec`. |
+| `setPlaybackRate(rate)` | Set historical rate. |
+| `setMuted(boolean)` | Mute/unmute; user-triggered unmute unlocks Web Audio. |
+| `setVolume(0to1)` | Set clamped linear gain. |
+| `getState()` | Read the most recent `RhombusAudioPlayerState`. |
+
+For React-controlled state, omit `playbackController` and pair each controlled prop with its
+change callback:
+
+```tsx
+import { useState } from "react";
+import {
+  RhombusAudioPlayer,
+  type RhombusAudioSource,
+} from "@rhombussystems/react";
+
+function ControlledAudio({ source }: { source: RhombusAudioSource }) {
+  const [playing, setPlaying] = useState(true);
+  const [positionMs, setPositionMs] = useState(Date.now());
+  const [muted, setMuted] = useState(true);
+  const [volume, setVolume] = useState(1);
+
+  return (
+    <RhombusAudioPlayer
+      source={source}
+      playing={playing}
+      positionMs={positionMs}
+      muted={muted}
+      volume={volume}
+      onPlayingChange={setPlaying}
+      onProgress={atMs => setPositionMs(atMs)}
+      onMutedChange={setMuted}
+      onVolumeChange={setVolume}
+    />
+  );
+}
+```
+
+Use a shared controller instead of duplicating controlled props when more than one media
+participant must move together.
+
+### Shared video/audio playback
+
+`useRhombusPlaybackController()` owns the shared mode, epoch-ms position, play intent,
+playback rate, mute, volume, status, and explicit seek sequence. In 2.1 the supported group is
+one video plus one audio participant. Use separate controllers for independently controlled
+players or multiple audible tracks.
+
+Video is the historical clock authority when present; standalone audio is the authority
+otherwise. Explicit seeks, rewinds, and Go Live commands reach every participant. In VOD, a
+required participant reporting buffering temporarily pauses the group while preserving play
+intent. Audio corrects small drift with a bounded rate adjustment and resets for large drift.
+
+Pair independent A100 audio with a camera:
 
 ```tsx
 import {
@@ -754,13 +1121,274 @@ function PairedPlayer() {
 }
 ```
 
-The video timeline becomes the shared timeline. For a matching DR40 video/audio pair, live
-realtime uses the Opus player; buffered live and VOD use the audio track embedded in the
-DR40 video MPD so the browser does not download the presentation twice.
+The timeline rendered by `RhombusPlayer` controls both participants. Rendering only
+`controls={["volume"]}` on the audio player avoids a duplicate timeline while retaining the
+audio output control.
 
-Browser autoplay rules still apply. Playback starts muted; a user-initiated unmute resumes
-the Web Audio context. Listen-only playback is supported; microphone/talkback is not part
-of this release.
+An audio-only layout can use an external timeline:
+
+```tsx
+import {
+  RhombusAudioPlayer,
+  Timeline,
+  useRhombusPlaybackController,
+  type RhombusAudioSource,
+} from "@rhombussystems/react";
+
+function AudioWithExternalTimeline({ source }: { source: RhombusAudioSource }) {
+  const playback = useRhombusPlaybackController();
+  const now = Date.now();
+
+  return (
+    <>
+      <RhombusAudioPlayer
+        source={source}
+        playbackController={playback}
+        controls={["volume"]}
+      />
+      <Timeline
+        playbackController={playback}
+        rangeStartMs={now - 60 * 60_000}
+        rangeEndMs={now}
+        fetchSeekPoints={false}
+      />
+    </>
+  );
+}
+```
+
+`Timeline.cameraUuid` is unnecessary when both `fetchSeekPoints` and `fetchAvailability` are
+false. If you enable fetched camera data, pass the relevant camera UUID and configure its
+proxy route.
+
+Controller options seed the group's initial state and timeline behavior:
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `initialMode` | `"live"` | Initial live/VOD mode. |
+| `initialPositionMs` | now | Initial epoch-ms playhead. |
+| `initialPlaying` | `true` | Initial play intent. |
+| `initialPlaybackRate` | `1` | Initial historical rate. |
+| `initialMuted` | `true` | Initial group mute. |
+| `initialVolume` | `1` | Initial linear gain, clamped to `0–1`. |
+| `defaultRewindSec` | `15` | Default shared rewind step. |
+| `liveEdgeToleranceSec` | `5` | Distance from now that counts as live. |
+| `autoGoLiveAtEdge` | `false` | Switch from VOD to live when playback catches up. |
+
+The returned controller exposes reactive `state` plus `play()`, `pause()`, `goLive()`,
+`seekTo(epochMs)`, `rewind(seconds?)`, `setPlaybackRate(rate)`, `setMuted(boolean)`, and
+`setVolume(0to1)`. Drive the group from application UI:
+
+```tsx
+import {
+  RhombusAudioPlayer,
+  RhombusPlayer,
+  useRhombusPlaybackController,
+} from "@rhombussystems/react";
+
+function GroupControls() {
+  const playback = useRhombusPlaybackController({
+    initialMuted: true,
+    defaultRewindSec: 30,
+  });
+
+  return (
+    <>
+      <RhombusPlayer cameraUuid="CAMERA_UUID" playbackController={playback} />
+      <RhombusAudioPlayer
+        source={{ type: "audio-gateway", uuid: "A100_UUID" }}
+        playbackController={playback}
+        controls={[]}
+      />
+      <button onClick={playback.play}>Play group</button>
+      <button onClick={playback.pause}>Pause group</button>
+      <button onClick={() => playback.setMuted(false)}>Unmute group</button>
+      <button onClick={() => playback.seekTo(Date.now() - 5 * 60_000)}>
+        Five minutes ago
+      </button>
+    </>
+  );
+}
+```
+
+Call `play`, `goLive`, or `setMuted(false)` directly inside the user's click/tap handler so
+browser audio activation remains associated with that gesture.
+
+### DR40 audio ownership
+
+For a DR40 video/audio pair, give both participants the same DR40 UUID:
+
+```tsx
+const playback = useRhombusPlaybackController();
+
+<>
+  <RhombusPlayer
+    cameraUuid={dr40Uuid}
+    playbackController={playback}
+  />
+  <RhombusAudioPlayer
+    source={{ type: "dr40", uuid: dr40Uuid }}
+    playbackController={playback}
+    controls={["volume"]}
+  />
+</>
+```
+
+Ownership changes automatically:
+
+- realtime live video: `RhombusAudioPlayer` owns the live Opus audio;
+- buffered live video: the video element's embedded DASH audio owns output;
+- DR40 VOD: the video element's embedded DASH audio owns output;
+- while video owns output, the separate audio transport reports
+  `"embedded-dr40"` and makes no duplicate audio request;
+- shared mute and volume are applied to whichever participant currently owns output.
+
+This handoff only occurs for `source.type === "dr40"` and exactly matching UUIDs. A100 audio
+always remains separate, even when it is associated with the displayed camera.
+
+### Audio callbacks, state, and recovery
+
+Use callbacks for telemetry and application UI:
+
+| Callback | When it fires |
+| --- | --- |
+| `onReady()` | An owned live WebSocket opens or the Dash.js VOD element can play; can fire again after reconnect/reinit. For decoded VOD and `"embedded-dr40"`, observe `status === "ready"`. |
+| `onModeChange(mode, atMs)` | Live/VOD mode changes. |
+| `onTransportChange(transport)` | Internal transport or DR40 ownership changes. |
+| `onSeek(atMs, mode)` | An explicit seek, rewind, or Go Live command is applied. |
+| `onProgress(atMs, mode)` | Best-effort wall-clock progress, approximately every 250 ms. |
+| `onPlayingChange(playing)` | Play intent changes. |
+| `onPlaybackRateChange(rate)` | Rate changes. |
+| `onMutedChange(muted)` | Mute changes. |
+| `onVolumeChange(volume)` | Gain changes. |
+| `onStatusChange(status)` | Status changes among idle/connecting/buffering/ready/reconnecting/error. |
+| `onStateChange(state)` | Any observable `RhombusAudioPlayerState` field changes. |
+| `onRecoveryAttempt(attempt, error)` | Live socket schedules an exponential-backoff reconnect. |
+| `onError(error)` | A non-recovered token, URI, decoder, segment, or transport error occurs. |
+
+`RhombusAudioPlayerState` contains `source`, `mode`, `transport`, `playing`,
+`playbackRate`, `muted`, `volume`, `currentWallClockMs`, `isAtLiveEdge`, and `status`.
+With a shared controller, `status` is the group's aggregate status: errors, reconnecting,
+buffering, and connecting participants take precedence over ready participants.
+
+Live sockets reconnect with a 2s → 4s → 8s exponential delay capped by
+`maxRetryIntervalMs`. Server `"reconnect"` messages force media-URI re-resolution. Token
+rotation also re-resolves media and reconnects live audio. Historical requests use the
+latest token and are aborted when source, token, seek, or manifest window changes.
+
+```tsx
+<RhombusAudioPlayer
+  source={source}
+  onReady={() => setMessage("Audio ready")}
+  onRecoveryAttempt={attempt => setMessage(`Reconnecting (${attempt})…`)}
+  onError={error => setMessage(`Audio failed: ${error.message}`)}
+  onStateChange={state => analytics.track("audio-state", state)}
+/>
+```
+
+### Audio authentication and network modes
+
+The same [federated-token rules](#authentication--tokens) apply to audio, with additional
+audio endpoints and requests:
+
+- live WebSocket URL: token in `x-auth-scheme` / `x-auth-ft` query parameters;
+- historical MPD and Dash.js requests: latest token in query parameters;
+- decoded historical segment requests: latest token in query parameters;
+- token rotation: reconnect live; subsequent historical requests use the new token.
+
+**Proxy mode (recommended):**
+
+```tsx
+<RhombusAudioPlayer
+  source={source}
+  apiOverrideBaseUrl="https://app-api.example.com"
+  paths={{
+    federatedToken: "/media/federated-token",
+    audioMediaUris: "/media/audio-uris",
+  }}
+/>
+```
+
+The browser sends `{ source }` to `paths.audioMediaUris`; your backend chooses the A100 or
+DR40 upstream contract. Your API key never leaves the server.
+
+**Direct Rhombus media-URI mode:**
+
+```tsx
+<RhombusAudioPlayer
+  source={source}
+  paths={{
+    federatedToken: "/api/federated-token",
+    audioGatewayMediaUris: "/audiogateway/getMediaUris",
+    dr40MediaUris: "/doorbellcamera/getMediaUris",
+  }}
+  rhombusApiBaseUrl="https://api2.rhombussystems.com/api"
+/>
+```
+
+Here the token still comes from your same-origin backend, but the browser calls Rhombus
+`getMediaUris` directly using federated headers. The token must be minted for the browser
+origin/domain and your deployment must allow the cross-origin request.
+
+**Consumer-managed token rotation:**
+
+```tsx
+<RhombusAudioPlayer
+  source={source}
+  apiOverrideBaseUrl="/"
+  federatedSessionToken={currentFederatedToken}
+/>
+```
+
+Changing `currentFederatedToken` reconnects live audio and invalidates outstanding decoded
+historical work. Never pass an API key as this prop.
+
+`connectionMode="wan"` selects `wanLiveOpusUri` and `wanVodMpdUriTemplate`.
+`connectionMode="lan"` selects the first non-empty `lanLiveOpusUris` and
+`lanVodMpdUrisTemplates` entry. A100 live URLs are normalized with `/ws` exactly once; DR40
+socket paths are used unchanged. The SDK does not silently fall back between WAN and LAN:
+choose the mode that is reachable from the browser.
+
+### Audio styling and browser behavior
+
+`classNames` adds classes to the built-in slots:
+
+```tsx
+<RhombusAudioPlayer
+  source={source}
+  className="audio-player"
+  classNames={{
+    controls: "audio-toolbar",
+    button: "audio-button",
+    speed: "audio-speed",
+    volume: "audio-volume",
+    status: "audio-status",
+    timeline: "audio-timeline",
+  }}
+/>
+```
+
+The SDK classes are `.rhombus-audio-controls`, `.rhombus-audio-btn`,
+`.rhombus-audio-speed`, `.rhombus-audio-volume`, and `.rhombus-audio-status`. Defaults use
+zero-specificity `:where(...)`, so normal application CSS overrides them. The root exposes
+`data-rhombus-audio-transport` for transport-specific styling.
+
+The component contains a non-visual `<audio>` element for DASH VOD. Do not use that element as
+the live-output contract: live and decoded VOD audio are scheduled through Web Audio and
+therefore have no meaningful `audio.currentTime` or `audio.src` for consumers. Use
+`onProgress`, `onStateChange`, or `getState()` instead.
+
+Browser requirements:
+
+- live and decoded VOD: Web Audio, WebAssembly, and Web Workers;
+- preferred historical path: MSE with Opus/WebM;
+- Safari/iOS: normally uses the decoded historical fallback;
+- output begins muted; unmute must be user initiated;
+- background-tab throttling and OS audio routing still apply.
+
+For two independent standalone audio players, omit `playbackController` on both (each creates
+its own controller), or give each a different controller. A single controller is
+intentionally limited to one video and one audio participant in 2.1.
 
 ---
 
@@ -783,16 +1411,18 @@ composing your own layout.
 
 ### Shared base props (all players)
 
-These come from `RhombusPlayerBaseProps` and are accepted by **every** player:
+These come from `RhombusMediaBaseProps` and are accepted by video players, the audio player,
+and `Timeline`. `RhombusPlayerBaseProps` extends this type with the `cameraUuid` required by
+video players. Audio uses `source`; `Timeline` needs `cameraUuid` only when it fetches
+camera-specific data.
 
 
 | Prop                    | Type                                                  | Default                               | Notes                                                                                                                                                  |
 | ----------------------- | ----------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `cameraUuid`            | `string`                                              | — **(required)**                      | Camera UUID from Rhombus. Safe in the browser.                                                                                                         |
 | `connectionMode`        | `"wan" | "lan"`                                       | `"wan"`¹                              | Which `getMediaUris` URIs to use. See [WAN vs LAN](#wan-vs-lan).                                                                                       |
 | `apiOverrideBaseUrl`    | `string`                                              | —                                     | Base for the token **and** media requests. Set for proxy mode. When omitted, media is fetched **directly from Rhombus** (needs a domain-scoped token). |
 | `rhombusApiBaseUrl`     | `string`                                              | `https://api2.rhombussystems.com/api` | Rhombus REST base when `apiOverrideBaseUrl` is omitted.                                                                                                |
-| `paths`                 | `{ federatedToken?, mediaUris?, footageSeekpoints?, presenceWindows? }` | see [backend](#backend-contract)      | Override route paths.                                                                                                                                  |
+| `paths`                 | `RhombusPlayerPaths`                                  | see [backend](#backend-contract)      | Override video/audio media, token, seekpoint, and availability routes.                                                                                 |
 | `federatedSessionToken` | `string`                                              | —                                     | Supply & rotate your own token; the SDK skips its token endpoint.                                                                                      |
 | `tokenDurationSec`      | `number`                                              | `86400`                               | Requested token TTL (SDK-managed mode).                                                                                                                |
 | `headers`               | `HeadersInit`                                         | —                                     | Static headers for the token request (+ media when `apiOverrideBaseUrl` set).                                                                          |
@@ -843,11 +1473,17 @@ function CameraPlayer({ cameraUuid, mode }: { cameraUuid: string; mode: "live" |
 
 ```tsx
 const [startTimeSec, setStartTimeSec] = useState(() => Math.floor(Date.now() / 1000) - 3600);
-<input type="datetime-local" onChange={(e) => {
-  const ms = new Date(e.target.value).getTime();
-  if (!Number.isNaN(ms)) setStartTimeSec(Math.floor(ms / 1000)); // loads a fresh window
-}} />
-<RhombusBufferedPlayer cameraUuid={cameraUuid} startTimeSec={startTimeSec} videoProps={{ controls: true }} />
+<>
+  <input type="datetime-local" onChange={(e) => {
+    const ms = new Date(e.target.value).getTime();
+    if (!Number.isNaN(ms)) setStartTimeSec(Math.floor(ms / 1000)); // loads a fresh window
+  }} />
+  <RhombusBufferedPlayer
+    cameraUuid={cameraUuid}
+    startTimeSec={startTimeSec}
+    videoProps={{ controls: true }}
+  />
+</>
 ```
 
 > **Pausing *live* DASH** lets it fall behind the live edge; Dash.js catches up on resume.
@@ -920,14 +1556,17 @@ import { Timeline } from "@rhombussystems/react";
 />
 ```
 
-Accepts the [shared base props](#shared-base-props-all-players) (for the seekpoint fetch) plus:
+Accepts the [shared base props](#shared-base-props-all-players) (used when fetching
+seekpoints/availability) plus:
 
 
 | Prop                                                | Type                                                   | Default            | Notes                                                                                                             |
 | --------------------------------------------------- | ------------------------------------------------------ | ------------------ | ----------------------------------------------------------------------------------------------------------------- |
 | `rangeStartMs` / `rangeEndMs`                       | `number` (epoch ms)                                    | — **(required)**   | Visible time window.                                                                                              |
+| `cameraUuid`                                        | `string`                                               | —                  | Required at runtime only when `fetchSeekPoints` or `fetchAvailability` is enabled.                                |
+| `playbackController`                                | `RhombusPlaybackController`                            | —                  | Supplies the playhead and seek action; takes precedence over `currentTimeMs` and `onSeek`.                        |
 | `currentTimeMs`                                     | `number | null`                                        | —                  | Playhead position; omit to hide it.                                                                               |
-| `onSeek`                                            | `(wallClockMs) => void`                                | — **(required)**   | Click/drag to seek.                                                                                               |
+| `onSeek`                                            | `(wallClockMs) => void`                                | —                  | Click/drag to seek. Required only when no `playbackController` is supplied.                                       |
 | `onHoverTimeChange`                                 | `(wallClockMs | null) => void`                         | —                  | Pointer hover time.                                                                                               |
 | `selection`                                         | `{ startMs, endMs } | null`                            | —                  | Clip selection. When set, draws a shaded region + draggable start/end handles + body + duration label.            |
 | `onSelectionChange`                                 | `({ startMs, endMs }) => void`                         | —                  | Fired as the user drags the selection.                                                                            |
@@ -938,6 +1577,8 @@ Accepts the [shared base props](#shared-base-props-all-players) (for the seekpoi
 | `canZoomIn` / `canZoomOut`                          | `boolean`                                              | `true`             | Enable/disable the respective zoom button at a limit.                                                             |
 | `fetchSeekPoints`                                   | `boolean`                                              | `false`            | Fetch event markers for the range. Rendered as clustered colored dashes grouped by activity type.                 |
 | `includeAnyMotion`                                  | `boolean`                                              | `true`             | Include generic motion in the fetch.                                                                              |
+| `fetchAvailability`                                 | `boolean`                                              | `false`            | Fetch recorded-footage coverage and show confirmed gaps. Requires `cameraUuid`.                                   |
+| `onAvailabilityLoaded`                              | `(RhombusFootageAvailability) => void`                 | —                  | Receives normalized cloud/local footage windows after a successful fetch.                                         |
 | `marks`                                             | `TimelineMark[]`                                       | —                  | Static event bands (`kind:"event"`) / gaps (`kind:"gap"`).                                                        |
 | `onSeekPointsLoaded`                                | `(RhombusFootageSeekPoint[]) => void`                  | —                  | Normalized seekpoints after each fetch (handy for diagnostics).                                                   |
 | `colors`                                            | `TimelineColors`                                       | —                  | Override the canvas-drawn colors (see [Theming the timeline](#theming-the-timeline)).                             |
@@ -1074,13 +1715,17 @@ Omit `federatedSessionToken`. The SDK `POST`s to your token route (default
 before expiry (~97% of the effective TTL). Effective TTL = min of your `tokenDurationSec` and
 any server hint in the response (`expiresInSec`, `expiresAtMs`, or `expiresAt`).
 
-- **DASH / buffered:** keeps playing across refreshes (requests read the latest token).
-- **Realtime:** reconnects the socket on each refresh (short blip).
+- **Video DASH / buffered:** keeps playing across refreshes (requests read the latest token).
+- **Realtime video:** reconnects the socket on each refresh (short blip).
+- **Live audio:** re-resolves media URIs and reconnects with the new token.
+- **Historical audio:** Dash.js and decoded segment requests read the latest token; outstanding
+  decoded work is invalidated during rotation.
 
 ### You-managed
 
 Pass `federatedSessionToken`. The SDK never calls your token endpoint. Rotate by passing a new
-string — DASH picks it up without a teardown; realtime reconnects.
+string. Video DASH reads it without a teardown; realtime video and live audio reconnect;
+historical audio uses it for subsequent requests.
 
 ### Two transport topologies
 
@@ -1088,8 +1733,9 @@ string — DASH picks it up without a teardown; realtime reconnects.
 |                   | `apiOverrideBaseUrl` **omitted**                                                                           | `apiOverrideBaseUrl` **set** (proxy mode)                                    |
 | ----------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | Token request     | `window.location.origin` + `paths.federatedToken`                                                          | `apiOverrideBaseUrl` + `paths.federatedToken`                                |
-| Media-URI request | **Direct to Rhombus** `api2.rhombussystems.com`                                                            | `apiOverrideBaseUrl` + `paths.mediaUris`                                     |
-| Requirement       | Token minted with a Rhombus `**domain`** allowing this origin, or the browser call is blocked (CORS / 401) | Your backend proxies `getMediaUris`; browser never talks to Rhombus directly |
+| Video media URIs  | **Direct to Rhombus** `api2.rhombussystems.com` + `paths.mediaUris`                                       | `apiOverrideBaseUrl` + `paths.mediaUris`                                     |
+| Audio media URIs  | **Direct to Rhombus** + `paths.audioGatewayMediaUris` or `paths.dr40MediaUris`                             | `apiOverrideBaseUrl` + `paths.audioMediaUris`                                |
+| Requirement       | Token minted with a Rhombus **`domain`** allowing this origin, or the browser call is blocked (CORS / 401) | Your backend proxies `getMediaUris`; browser never talks to Rhombus directly |
 
 
 Proxy mode is also **required for built-in Save Clip** (see [Save Clip](#save-clip)).
@@ -1100,8 +1746,9 @@ Proxy mode is also **required for built-in Save Clip** (see [Save Clip](#save-cl
 
 `connectionMode` selects which `getMediaUris` URI to use:
 
-- `**wan`** (default for buffered) — cloud path; works anywhere with internet.
-- `**lan**` — direct-to-device path (`lanLive*` fields, first non-empty entry). The browser
+- **`wan`** (default except low-level realtime, where it is required explicitly) — cloud
+  path; works anywhere with internet.
+- **`lan`** — direct-to-device path (`lanLive*` fields, first non-empty entry). The browser
 must reach the camera/NVR host (routing, firewall, and **HTTPS-vs-HTTP mixed-content** rules
 apply). Federated auth rides as `x-auth-scheme=federated-token` & `x-auth-ft` query params.
 
@@ -1144,9 +1791,15 @@ Set `maxRetryIntervalMs={0}` to disable; pass `onRecoveryAttempt` to drive "reco
 loads within `stallTimeoutMs`, or `currentTime` stops advancing for `stallTimeoutMs` (not
 paused/seeking/ended).
 
-**Realtime (WebSocket)** reopens the socket on `onerror`/unexpected `onclose`, if it fails to
+**Realtime video (WebSocket)** reopens the socket on `onerror`/unexpected `onclose`, if it fails to
 open within ~8s, if no decoded frame arrives within `stallTimeoutMs` (the classic "WAN black
 screen until refresh"), or on a server `reconnect` message.
+
+**Live audio (WebSocket)** reopens on an unexpected close, after
+`stallTimeoutMs` without messages, after repeated malformed TLV data, and on a server
+`reconnect` message. A server reconnect also re-resolves the A100/DR40 media URIs. Historical
+Dash.js initialization failure falls back to decoded Opus; historical fetch/decoder errors
+surface through `onError`.
 
 ```tsx
 function CameraWithStatus({ cameraUuid }: { cameraUuid: string }) {
@@ -1177,7 +1830,7 @@ function CameraWithStatus({ cameraUuid }: { cameraUuid: string }) {
 
 - **Request:** `{ "durationSec": number }`.
 - **Server:** forward to Rhombus `POST /org/generateFederatedSessionToken` with your
-**server-side** API key. Include a Rhombus `**domain`** so the browser may call
+**server-side** API key. Include a Rhombus **`domain`** so the browser may call
 `api2.rhombussystems.com` in direct mode.
 - **Response JSON:** must include `federatedSessionToken`. Optionally `expiresInSec` /
 `expiresAtMs` / `expiresAt` so refresh timing matches your server-enforced cap.
@@ -1226,15 +1879,31 @@ Return the upstream response unchanged. The SDK selects WAN/LAN fields, adds the
 
 ```js
 app.post("/api/audio-media-uris", async (req, res) => {
-  const { type, uuid } = req.body.source;
+  const type = req.body?.source?.type;
+  const uuid = req.body?.source?.uuid;
+  if (!uuid || (type !== "audio-gateway" && type !== "dr40")) {
+    return res.status(400).json({ error: "Invalid audio source" });
+  }
   const isGateway = type === "audio-gateway";
   const path = isGateway
     ? "/audiogateway/getMediaUris"
     : "/doorbellcamera/getMediaUris";
   const body = isGateway ? { gatewayUuid: uuid } : { deviceUuid: uuid };
-  res.json(await postToRhombus(path, body));
+  const upstream = await fetch(`https://api2.rhombussystems.com/api${path}`, {
+    method: "POST",
+    headers: {
+      "x-auth-apikey": process.env.RHOMBUS_API_TOKEN,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  res.status(upstream.status).json(await upstream.json());
 });
 ```
+
+Preserve upstream non-2xx status codes in your wrapper. Do not transform or rename
+`wanLiveOpusUri`, `lanLiveOpusUris`, `wanVodMpdUriTemplate`, or
+`lanVodMpdUrisTemplates`.
 
 ### Footage seekpoints (Timeline, optional)
 
@@ -1296,7 +1965,8 @@ streams the file back.
 - Player props: `RhombusPlayerProps`, `RhombusBufferedPlayerProps`, `RhombusRealtimePlayerProps`,
 `RhombusPlayerBaseProps`, `TimelineProps`.
 - Audio/controller: `RhombusAudioPlayerProps`, `RhombusAudioPlayerHandle`,
-`RhombusAudioPlayerState`, `RhombusAudioSource`, `RhombusAudioTransport`,
+`RhombusAudioPlayerState`, `RhombusAudioPlayerClassNames`,
+`RhombusAudioPlayerControlsProps`, `RhombusAudioSource`, `RhombusAudioTransport`,
 `RhombusPlaybackController`, `RhombusPlaybackControllerOptions`,
 `RhombusPlaybackControllerState`, `RhombusMediaBaseProps`.
 - Handles: `RhombusPlayerHandle`, `RhombusBufferedPlayerHandle`, `RhombusRealtimePlayerHandle`,
@@ -1333,13 +2003,17 @@ streams the file back.
 
 ## Browser support
 
-- `**RhombusBufferedPlayer`** (and `RhombusPlayer` in buffered mode): any modern browser with
+- **`RhombusBufferedPlayer`** (and `RhombusPlayer` in buffered mode): any modern browser with
 MSE (Dash.js). Broadest support.
-- `**RhombusRealtimePlayer**` (and `RhombusPlayer`'s default live transport): needs **WebCodecs**
+- **`RhombusRealtimePlayer`** (and `RhombusPlayer`'s default live transport): needs **WebCodecs**
 `VideoDecoder` with H.264 — Chrome, Edge, Safari 16.4+. Firefox H.264 is still limited.
 - `RhombusAudioPlayer`: live audio and decoded VOD require Web Audio, WebAssembly, and Web
 Workers. Historical playback prefers Opus/WebM MSE and automatically falls back to decoded
 Rhombus Opus segments on Safari/iOS and other browsers without that MSE combination.
+
+Audio starts muted. Call `play()`, `goLive()`, or `setMuted(false)` from the user's actual
+click/tap handler; forwarding the action through a shared playback controller preserves that
+activation for both the Web Audio and Dash.js transports.
 
 `RhombusPlayer` feature-detects WebCodecs and **auto-falls back** to buffered live; for the
 low-level players, detect yourself:
@@ -1369,7 +2043,35 @@ return supportsRealtime
 | **404 on `/api/presence-windows`**                   | Availability route not implemented / wrong path. Implement it (forward `/camera/getPresenceWindows`) or set `paths.presenceWindows`. Harmless otherwise: gap rendering stays off and the clip pre-check fails open. |
 | **VOD plays a "VIDEO NOT AVAILABLE" pattern**        | Rhombus serves placeholder frames (HTTP 200) where footage doesn't exist — not a player bug. Enable `timeline.fetchAvailability` + the presence-windows route to surface those gaps and gate clip exports.          |
 | **Short blip on quality / token change (realtime)**  | Expected — realtime reconnects the socket. Buffered changes are seamless.                                                                            |
+| **Audio says Ready or shows time but is silent**     | Audio starts muted. Click Unmute (or call `setMuted(false)` directly in a user gesture), then verify volume, OS output device, and tab/site audio permissions. |
+| **Audio media response has no usable WAN/LAN URI**   | The UUID is the wrong device type, inaccessible to this organization, or has no URI for the chosen network. Use an A100 audio-gateway UUID or DR40 device UUID and verify `connectionMode`. |
+| **Audio remains Connecting**                         | Check the live WebSocket in DevTools, federated query parameters, CSP `connect-src`, proxy response, and whether the browser can reach the selected WAN/LAN host. |
+| **Historical audio fails only on Safari/iOS**        | The decoded fallback must fetch WASM and Rhombus Opus segments. Allow worker/WASM assets and segment hosts in CSP/CORS, and confirm token query parameters reach each segment request. |
+| **Duplicate or echoing DR40 audio**                  | Pair `RhombusPlayer` and `RhombusAudioPlayer` with the same DR40 UUID and the same controller. Matching buffered/VOD video then owns embedded audio automatically. |
 
+
+---
+
+## Migrating from 2.0 → 2.1
+
+2.1 is non-breaking. Existing video-only code can upgrade without changes.
+
+The new surface is additive:
+
+- use `RhombusAudioPlayer` for A100 or DR40 live/historical audio;
+- use `useRhombusPlaybackController` when video, audio, and an optional standalone
+  `Timeline` must share play/pause, epoch-ms position, rate, mute, volume, and seeks;
+- pass `playbackController` to an existing `RhombusPlayer` without changing its standalone
+  behavior when the prop is absent;
+- `Timeline.cameraUuid` and `Timeline.onSeek` are now optional for controller-driven
+  timelines; `cameraUuid` remains required when fetching seekpoints or availability;
+- `RhombusMediaBaseProps` contains source-independent auth/network/recovery props, while
+  the existing `RhombusPlayerBaseProps` name remains exported for video code;
+- `RhombusPlayerPaths` adds `audioMediaUris`, `audioGatewayMediaUris`, and
+  `dr40MediaUris`.
+
+Add the [`/api/audio-media-uris`](#audio-media-uri-endpoint-proxy-mode-only) proxy route
+before using proxy-mode audio. Existing `/api/media-uris` video routes are unchanged.
 
 ---
 
