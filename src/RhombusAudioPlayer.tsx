@@ -382,6 +382,7 @@ export const RhombusAudioPlayer = forwardRef<
     let attempt = 0;
     let lastMessageAt = Date.now();
     let lastTimestamp: number | undefined;
+    let consecutiveMalformedMessages = 0;
 
     const engine = new AudioPcmEngine({
       muted: controller.state.muted,
@@ -420,6 +421,7 @@ export const RhombusAudioPlayer = forwardRef<
         if (!(event.data instanceof ArrayBuffer)) return;
         try {
           const message = parseAudioTlvMessage(event.data);
+          consecutiveMalformedMessages = 0;
           if (message.timestampMs != null) lastTimestamp = message.timestampMs;
           message.frames.forEach((frame, index) => {
             engine.enqueueOpus(
@@ -433,6 +435,24 @@ export const RhombusAudioPlayer = forwardRef<
             lastTimestamp += message.frames.length * AUDIO_FRAME_DURATION_MS;
           }
         } catch (error) {
+          if (
+            error instanceof Error &&
+            error.message.startsWith("Malformed audio TLV")
+          ) {
+            consecutiveMalformedMessages++;
+            // A100 streams can emit one non-TLV binary packet immediately after
+            // their JSON init message. The legacy player discarded incomplete
+            // packets, so tolerate isolated framing failures but recover if the
+            // stream remains corrupt.
+            if (consecutiveMalformedMessages < 3) return;
+            reportError(
+              new Error(
+                "Live audio stream sent three consecutive malformed TLV messages"
+              )
+            );
+            next.close();
+            return;
+          }
           reportError(error);
         }
       };

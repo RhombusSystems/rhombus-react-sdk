@@ -1,10 +1,11 @@
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RhombusAudioPlayer } from "./RhombusAudioPlayer.js";
 
 const mocks = vi.hoisted(() => ({
   engines: [] as Array<{
     destroy: ReturnType<typeof vi.fn>;
+    enqueueOpus: ReturnType<typeof vi.fn>;
   }>,
 }));
 
@@ -125,6 +126,85 @@ describe("RhombusAudioPlayer transports", () => {
     view.unmount();
     expect(MockWebSocket.instances[1].close).toHaveBeenCalled();
     expect(mocks.engines[mocks.engines.length - 1]?.destroy).toHaveBeenCalled();
+  });
+
+  it("discards an isolated non-TLV A100 startup packet", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(mediaResponse), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const onError = vi.fn();
+    render(
+      <RhombusAudioPlayer
+        source={{ type: "audio-gateway", uuid: "gateway-1" }}
+        federatedSessionToken="token"
+        controls={[]}
+        onError={onError}
+      />
+    );
+
+    await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+    const socket = MockWebSocket.instances[0];
+    const malformedStartupPacket = new Uint8Array([
+      0xfb, 0xeb, 0xc7, 0x23, 0xa3, 0x82,
+    ]).buffer;
+    const validPacket = new Uint8Array([
+      0x00, 0, 0, 2, 0, 1,
+      0x01, 0, 0, 8, 0, 0, 1, 0x9f, 0x90, 0x6a, 0x41, 0x03,
+      0x04, 0, 0, 3, 1, 2, 3,
+    ]).buffer;
+
+    act(() => {
+      socket.onmessage?.({ data: malformedStartupPacket } as MessageEvent);
+      socket.onmessage?.({ data: validPacket } as MessageEvent);
+    });
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(mocks.engines[0]?.enqueueOpus).toHaveBeenCalledWith(
+      new Uint8Array([1, 2, 3]),
+      1_784_834_310_403
+    );
+  });
+
+  it("reports and closes a stream with repeated malformed TLVs", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(mediaResponse), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const onError = vi.fn();
+    render(
+      <RhombusAudioPlayer
+        source={{ type: "audio-gateway", uuid: "gateway-1" }}
+        federatedSessionToken="token"
+        controls={[]}
+        onError={onError}
+      />
+    );
+
+    await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+    const socket = MockWebSocket.instances[0];
+    const malformedPacket = new Uint8Array([
+      0xfb, 0xeb, 0xc7, 0x23, 0xa3, 0x82,
+    ]).buffer;
+    act(() => {
+      socket.onmessage?.({ data: malformedPacket } as MessageEvent);
+      socket.onmessage?.({ data: malformedPacket } as MessageEvent);
+      socket.onmessage?.({ data: malformedPacket } as MessageEvent);
+    });
+
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message:
+          "Live audio stream sent three consecutive malformed TLV messages",
+      })
+    );
+    expect(socket.close).toHaveBeenCalled();
   });
 
   it("authenticates and aborts decoded historical segment requests on cleanup", async () => {
