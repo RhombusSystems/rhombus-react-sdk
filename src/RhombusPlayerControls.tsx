@@ -57,6 +57,8 @@ const CONTROLS_CSS = `
 :where(.rhombus-player-live-dot){width:8px;height:8px;border-radius:50%;background:#22c55e;}
 :where(.rhombus-player-clip){display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 12px 8px;background:#111;color:#eee;font:13px system-ui,sans-serif;}
 :where(.rhombus-player-clip-status){opacity:.85;}
+:where(.rhombus-player-clip-warning){color:#fbbf24;}
+:where(.rhombus-player-clip-warning[data-blocking="true"]){color:#f87171;}
 :where(.rhombus-player-clip-link){color:#7ab8ff;}
 :where(.rhombus-player-clip-duration){opacity:.9;font-variant-numeric:tabular-nums;}
 :where(.rhombus-player-clip-form){display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
@@ -95,10 +97,14 @@ type RhombusPlayerControlsProps = {
   clipSelection: { startMs: number; endMs: number } | null;
   showClipOptionsForm: boolean;
   defaultClipVisibility: RhombusClipVisibility;
+  /** Effective footage pre-check policy (`RhombusSaveClipConfig.requireFootage`, defaulted). */
+  requireFootage: "any" | "full" | "off";
   /** Enter/exit clip mode (seeds/clears the selection). */
   onToggleClipSelection: () => void;
   /** Run the export with the collected options. */
   onExportClip: (options: RhombusClipExportOptions) => void;
+  /** The date/time jump picker node (rendered in the right group when `"goToDate"` is shown). */
+  dateTimePicker?: ReactNode;
   /** The Timeline node (rendered above the button row). */
   children?: ReactNode;
 };
@@ -161,8 +167,10 @@ export function RhombusPlayerControls(props: RhombusPlayerControlsProps) {
     clipSelection,
     showClipOptionsForm,
     defaultClipVisibility,
+    requireFootage,
     onToggleClipSelection,
     onExportClip,
+    dateTimePicker,
     children,
   } = props;
 
@@ -190,6 +198,20 @@ export function RhombusPlayerControls(props: RhombusPlayerControlsProps) {
   const btnCls = classNames?.button;
   const clipExporting =
     state.clipExport?.phase === "submitting" || state.clipExport?.phase === "rendering";
+  // Footage coverage of the selection, when known. Unknown (`null`) must never warn or block —
+  // the export-time pre-check in the player is the authoritative gate.
+  const clipCoverage = state.clipSelectionCoverage;
+  const footageWarning =
+    clipCoverage && clipCoverage.coverageRatio < 1
+      ? clipCoverage.coveredMs <= 0
+        ? "No recorded footage in the selected range"
+        : "Part of the selected range has no recorded footage"
+      : null;
+  const footageBlocked =
+    !!clipCoverage &&
+    requireFootage !== "off" &&
+    (clipCoverage.coveredMs <= 0 ||
+      (requireFootage === "full" && clipCoverage.coverageRatio < 1));
 
   const runExport = () => {
     onExportClip({
@@ -214,9 +236,10 @@ export function RhombusPlayerControls(props: RhombusPlayerControlsProps) {
   }
 
   const showLiveType = show("liveType") && showLiveTypeSwitcher;
+  const showGoToDate = show("goToDate") && dateTimePicker != null;
   const hasLeft = show("zoom") || show("snapshot") || show("videoFit");
   const hasCenter = show("rewind") || show("play") || show("speed");
-  const hasRight = show("goLive") || showLiveType;
+  const hasRight = show("goLive") || showLiveType || showGoToDate;
   const hasBar = hasLeft || hasCenter || hasRight;
 
   return (
@@ -314,8 +337,9 @@ export function RhombusPlayerControls(props: RhombusPlayerControlsProps) {
             )}
           </div>
 
-          {/* RIGHT — time + live status + live-type */}
+          {/* RIGHT — date picker + time + live status + live-type */}
           <div className="rhombus-player-group rhombus-player-group-right">
+            {showGoToDate && dateTimePicker}
             {show("goLive") && (
               <>
                 {!isLive && <span className="rhombus-player-time">{fmtClock(state.currentWallClockMs)}</span>}
@@ -396,6 +420,12 @@ export function RhombusPlayerControls(props: RhombusPlayerControlsProps) {
                 Duration: {formatClipDuration(clipSelection.endMs - clipSelection.startMs)}
               </span>
 
+              {footageWarning && (
+                <span className="rhombus-player-clip-warning" data-blocking={footageBlocked}>
+                  ⚠ {footageWarning}
+                </span>
+              )}
+
               {formOpen ? (
                 <span className="rhombus-player-clip-form">
                   <input
@@ -422,7 +452,12 @@ export function RhombusPlayerControls(props: RhombusPlayerControlsProps) {
                       </option>
                     ))}
                   </select>
-                  <Btn className={btnCls} onClick={runExport} disabled={clipExporting} title="Create clip">
+                  <Btn
+                    className={btnCls}
+                    onClick={runExport}
+                    disabled={clipExporting || footageBlocked}
+                    title={footageBlocked ? footageWarning ?? "No recorded footage" : "Create clip"}
+                  >
                     Create
                   </Btn>
                   <Btn className={btnCls} onClick={() => setFormOpen(false)} title="Back">
@@ -432,7 +467,12 @@ export function RhombusPlayerControls(props: RhombusPlayerControlsProps) {
               ) : (
                 <>
                   {state.canSaveClip && (
-                    <Btn className={btnCls} onClick={onSaveClipClick} disabled={clipExporting} title="Save clip">
+                    <Btn
+                      className={btnCls}
+                      onClick={onSaveClipClick}
+                      disabled={clipExporting || footageBlocked}
+                      title={footageBlocked ? footageWarning ?? "No recorded footage" : "Save clip"}
+                    >
                       Save clip
                     </Btn>
                   )}

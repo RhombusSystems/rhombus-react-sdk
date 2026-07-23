@@ -12,6 +12,7 @@ import {
 import { RhombusBufferedPlayer } from "./RhombusBufferedPlayer.js";
 import { RhombusRealtimePlayer } from "./RhombusRealtimePlayer.js";
 import { RhombusPlayerControls } from "./RhombusPlayerControls.js";
+import { RhombusDateTimePicker } from "./RhombusDateTimePicker.js";
 import { Timeline } from "./Timeline.js";
 import { snapshotCanvasElement, snapshotVideoElement } from "./playerSnapshot.js";
 import {
@@ -20,6 +21,7 @@ import {
   requestClipSplice,
 } from "./rhombusClip.js";
 import { chooseVodAnchor, isAtLiveEdge, isWithinWindow, shouldSwitchToLive } from "./playerVodTime.js";
+import { computeRangeCoverage, fetchPresenceWindows } from "./rhombusPresence.js";
 import { joinUrl } from "./urlAuth.js";
 import { getRhombusPlaybackControllerInternals } from "./useRhombusPlaybackController.js";
 import type {
@@ -27,11 +29,13 @@ import type {
   RhombusClipExportOptions,
   RhombusClipExportStatus,
   RhombusClipRange,
+  RhombusFootageAvailability,
   RhombusLiveTransport,
   RhombusPlayerHandle,
   RhombusPlayerMode,
   RhombusPlayerProps,
   RhombusPlayerState,
+  RhombusRangeCoverage,
   RhombusRealtimePlayerHandle,
   RhombusSnapshotResult,
 } from "./types.js";
@@ -57,6 +61,8 @@ function clampNum(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
 const CLIP_POLL_INTERVAL_MS = 2_000;
+/** Ceiling on the pre-export footage check; past it the export proceeds ungated (fail open). */
+const FOOTAGE_CHECK_TIMEOUT_MS = 6_000;
 const WALLCLOCK_TICK_MS = 250;
 /** While a seek is settling, treat the video as "caught up" once it is within this of the target. */
 const SEEK_SETTLE_THRESHOLD_MS = 1_500;
@@ -150,6 +156,9 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
     // Clip selection range (epoch ms), or null when not in clip mode.
     const [clipSelection, setClipSelection] = useState<{ startMs: number; endMs: number } | null>(null);
     const [clipExport, setClipExport] = useState<RhombusClipExportStatus | undefined>(undefined);
+    // Latest footage availability from the Timeline's fetch; null when unknown (timeline
+    // hidden, fetch disabled, or nothing fetched yet).
+    const [footageAvailability, setFootageAvailability] = useState<RhombusFootageAvailability | null>(null);
     // Timeline window is modeled as center + span (zoom step). `timelineCenterMs === null` ⇒
     // auto-follow (day-center when zoomed out, the playhead when zoomed in). Chevrons pan the
     // center; the zoom buttons / wheel change the zoom step. Both reset on Go Live.
@@ -338,6 +347,13 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
           goLive();
           return;
         }
+        // Bring the timeline view along when the target lands outside the visible window
+        // (date-picker jumps, ref seeks): resume auto-follow, which re-centers on the target's
+        // day (day view) or the playhead (zoomed). Timeline-click seeks are always inside the
+        // window (the pointer math clamps to it), so scrubbing never moves the window.
+        if (Math.abs(targetMs - tlCenterRef.current) > tlSpanRef.current / 2) {
+          setTimelineCenterMs(null);
+        }
         const anchor = vodAnchorRef.current;
         if (
           modeRef.current === "vod" &&
@@ -473,6 +489,23 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
     const clipEnabled = (saveClip?.enabled ?? overrideBase !== undefined) && overrideBase !== undefined;
     const clipExportCancelRef = useRef(false);
 
+    // ---- footage availability (timeline fetch + clip coverage) ----
+    // Default ON only in proxy mode (the proxy attaches the API key, mirroring `clipEnabled`);
+    // direct-mode federated auth for getPresenceWindows is unverified, so it is opt-in there.
+    const fetchAvailabilityEnabled = timeline?.fetchAvailability ?? overrideBase !== undefined;
+    const handleAvailabilityLoaded = useCallback((availability: RhombusFootageAvailability) => {
+      setFootageAvailability(availability);
+      cbRef.current.timeline?.onAvailabilityLoaded?.(availability);
+    }, []);
+    // Coverage of the current selection; null when unknown (no data, or the selection extends
+    // outside the fetched range — e.g. after panning the timeline away). Unknown never warns.
+    const clipSelectionCoverage = useMemo(() => {
+      if (!clipSelection) return null;
+      const lo = Math.min(clipSelection.startMs, clipSelection.endMs);
+      const hi = Math.max(clipSelection.startMs, clipSelection.endMs);
+      return computeRangeCoverage(footageAvailability, lo, hi);
+    }, [clipSelection, footageAvailability]);
+
     const startClipExport = useCallback(
       async (
         range?: RhombusClipRange,
@@ -484,8 +517,11 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
           (sel
             ? { startMs: Math.min(sel.startMs, sel.endMs), endMs: Math.max(sel.startMs, sel.endMs), cameraUuid }
             : null);
-        const fail = (error: string): RhombusClipExportStatus => {
-          const s: RhombusClipExportStatus = { phase: "error", error };
+        const fail = (
+          error: string,
+          extra?: Pick<RhombusClipExportStatus, "errorCode" | "coverage">
+        ): RhombusClipExportStatus => {
+          const s: RhombusClipExportStatus = { phase: "error", error, ...extra };
           setClipExport(s);
           cbRef.current.onClipExport?.(s);
           return s;
@@ -498,6 +534,53 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
         const maxDur = saveClip?.maxDurationSec ?? 3600;
         if (durationSec > maxDur) return fail(`Clip exceeds max duration of ${maxDur}s`);
 
+        // Pre-export footage check: Rhombus renders no-footage ranges as "VIDEO NOT AVAILABLE"
+        // placeholder frames and the clip still completes, so confirmed-empty ranges are blocked
+        // up front. Fails open — an unreachable availability endpoint never blocks an export.
+        const requireFootage = saveClip?.requireFootage ?? "any";
+        let coverage: RhombusRangeCoverage | undefined;
+        const checkEndMs = Math.min(r.endMs, Date.now());
+        if (requireFootage !== "off" && checkEndMs > r.startMs) {
+          try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), FOOTAGE_CHECK_TIMEOUT_MS);
+            try {
+              const startSec = Math.floor(r.startMs / 1000);
+              const availability = await fetchPresenceWindows({
+                apiOverrideBaseUrl: overrideBase,
+                rhombusApiBaseUrl: props.rhombusApiBaseUrl,
+                presenceWindowsPath: props.paths?.presenceWindows,
+                federatedSessionToken: props.federatedSessionToken,
+                headers: props.headers,
+                getRequestHeaders: props.getRequestHeaders,
+                cameraUuid,
+                startTimeSec: startSec,
+                durationSec: Math.ceil(checkEndMs / 1000) - startSec,
+                signal: controller.signal,
+              });
+              coverage = computeRangeCoverage(availability, r.startMs, checkEndMs) ?? undefined;
+            } finally {
+              clearTimeout(timer);
+            }
+          } catch (e) {
+            cbRef.current.onError?.(e instanceof Error ? e : new Error(String(e)));
+          }
+          if (coverage) {
+            if (coverage.coveredMs <= 0) {
+              return fail("No recorded footage in the selected range", {
+                errorCode: "no-footage",
+                coverage,
+              });
+            }
+            if (requireFootage === "full" && coverage.coverageRatio < 1) {
+              return fail("The selected range has gaps with no recorded footage", {
+                errorCode: "partial-footage",
+                coverage,
+              });
+            }
+          }
+        }
+
         clipExportCancelRef.current = false;
         const auth = { headers: props.headers, getRequestHeaders: props.getRequestHeaders };
         const spliceUrl = joinUrl(overrideBase, saveClip?.paths?.splice ?? "/api/save-clip");
@@ -509,7 +592,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
           cbRef.current.onClipExport?.(s);
         };
 
-        emit({ phase: "submitting" });
+        emit({ phase: "submitting", coverage });
         try {
           const { clipUuid } = await requestClipSplice({
             ...auth,
@@ -526,7 +609,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
             audioIncluded: options?.audioIncluded,
             saveToConsole: options?.saveToConsole,
           });
-          emit({ phase: "rendering", clipUuid, percentComplete: 0 });
+          emit({ phase: "rendering", clipUuid, percentComplete: 0, coverage });
 
           // poll until complete, or give up after progressTimeoutMs so the UI never hangs.
           const renderStartedAt = Date.now();
@@ -535,7 +618,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
           // eslint-disable-next-line no-constant-condition
           while (true) {
             if (clipExportCancelRef.current) {
-              const s: RhombusClipExportStatus = { phase: "canceled", clipUuid };
+              const s: RhombusClipExportStatus = { phase: "canceled", clipUuid, coverage };
               emit(s);
               return s;
             }
@@ -555,6 +638,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
                 clipUuid,
                 percentComplete: 100,
                 downloadUrl: url,
+                coverage,
               };
               emit(s);
               return s;
@@ -564,6 +648,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
               clipUuid,
               percentComplete: progress.percentComplete,
               currentOperation: progress.currentOperation,
+              coverage,
             });
             await new Promise(res => setTimeout(res, CLIP_POLL_INTERVAL_MS));
           }
@@ -571,7 +656,17 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
           return fail(e instanceof Error ? e.message : String(e));
         }
       },
-      [cameraUuid, clipEnabled, overrideBase, props.headers, props.getRequestHeaders, saveClip]
+      [
+        cameraUuid,
+        clipEnabled,
+        overrideBase,
+        props.headers,
+        props.getRequestHeaders,
+        props.rhombusApiBaseUrl,
+        props.paths,
+        props.federatedSessionToken,
+        saveClip,
+      ]
     );
 
     useEffect(() => () => {
@@ -860,6 +955,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
         isAtLiveEdge: isAtLiveEdge(mode === "live" ? null : wc, Date.now(), liveEdgeToleranceSec),
         canSaveClip: clipEnabled,
         clipSelection,
+        clipSelectionCoverage,
         clipExport,
       };
     }, [
@@ -872,6 +968,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
       zoom,
       clipEnabled,
       clipSelection,
+      clipSelectionCoverage,
       clipExport,
       liveEdgeToleranceSec,
     ]);
@@ -1072,8 +1169,27 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
           clipSelection={clipSelection}
           showClipOptionsForm={saveClip?.showOptionsForm ?? true}
           defaultClipVisibility={saveClip?.defaultVisibility ?? "ORG_WIDE"}
+          requireFootage={saveClip?.requireFootage ?? "any"}
           onToggleClipSelection={toggleClipSelection}
           onExportClip={options => void startClipExport(undefined, options)}
+          dateTimePicker={
+            <RhombusDateTimePicker
+              // While live the label would only update on incidental re-renders (and "now" is
+              // implicit), so show the placeholder; opening the picker still seeds Date.now().
+              value={mode === "live" ? null : state.currentWallClockMs}
+              onChange={seekTo}
+              cameraUuid={cameraUuid}
+              apiOverrideBaseUrl={props.apiOverrideBaseUrl}
+              rhombusApiBaseUrl={props.rhombusApiBaseUrl}
+              paths={props.paths}
+              federatedSessionToken={props.federatedSessionToken}
+              headers={props.headers}
+              getRequestHeaders={props.getRequestHeaders}
+              disableFootageCheck={!fetchAvailabilityEnabled}
+              direction="up"
+              onError={props.onError}
+            />
+          }
         >
           {(controls === undefined || controls.includes("timeline")) && (
             <Timeline
@@ -1101,6 +1217,8 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
               canZoomOut={tlCanZoomOut}
               fetchSeekPoints={timeline?.fetchSeekPoints ?? true}
               includeAnyMotion={timeline?.includeAnyMotion ?? true}
+              fetchAvailability={fetchAvailabilityEnabled}
+              onAvailabilityLoaded={handleAvailabilityLoaded}
               marks={timeline?.marks}
               colors={timeline?.colors}
               height={timeline?.height}

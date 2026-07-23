@@ -43,6 +43,13 @@ export type RhombusPlayerPaths = {
    * (default `/camera/getFootageSeekpointsV2`).
    */
   footageSeekpoints?: string;
+  /**
+   * POST path for footage availability (`/camera/getPresenceWindows`). Used by {@link Timeline} when
+   * `fetchAvailability` is enabled and by the built-in Save Clip pre-check. In proxy mode resolved
+   * against `apiOverrideBaseUrl` (default `/api/presence-windows`); in direct Rhombus mode resolved
+   * against `rhombusApiBaseUrl` (default `/camera/getPresenceWindows`).
+   */
+  presenceWindows?: string;
 };
 
 /**
@@ -292,6 +299,8 @@ export const RhombusPlayerControl = {
   SaveClip: "saveClip",
   Timeline: "timeline",
   LiveType: "liveType",
+  /** The date/time jump picker ({@link RhombusDateTimePicker} wired to `seekTo`). */
+  GoToDate: "goToDate",
   /** The video-display / fit picker (Default Aspect Ratio / Cropped / Stretch / Auto-Size). */
   VideoFit: "videoFit",
 } as const;
@@ -354,6 +363,18 @@ export type RhombusClipExportStatus = {
   /** Resolved download URL once complete. */
   downloadUrl?: string;
   error?: string;
+  /**
+   * Machine-readable reason when the footage pre-check blocked the export (`phase: "error"`):
+   * `"no-footage"` — zero recorded footage in the range; `"partial-footage"` — the range has
+   * gaps and `requireFootage: "full"` is set. Absent on ordinary errors.
+   */
+  errorCode?: "no-footage" | "partial-footage";
+  /**
+   * Footage coverage of the export range, when the pre-check ran. Present on the blocking
+   * error and carried on subsequent phases of a proceeding export so UIs can warn about
+   * partial footage. Absent when the check was off or failed open.
+   */
+  coverage?: RhombusRangeCoverage;
 };
 
 /**
@@ -387,6 +408,55 @@ export type RhombusSaveClipConfig = {
    * When `false`, "Save clip" exports immediately with defaults. Default `true`.
    */
   showOptionsForm?: boolean;
+  /**
+   * Footage pre-check policy for exports (Rhombus renders clips over no-footage ranges as
+   * "VIDEO NOT AVAILABLE" placeholder frames, so an unchecked export can "succeed" with no
+   * real video). Before submitting, the player fetches `/camera/getPresenceWindows` for the
+   * selected range:
+   * - `"any"` (default) — block only when the range has **zero** recorded footage.
+   * - `"full"` — block when the range has **any** confirmed gap.
+   * - `"off"` — no pre-check (legacy behavior).
+   * The check fails open: if availability can't be fetched (missing proxy route, timeout),
+   * the export proceeds ungated. Blocked exports emit `phase: "error"` with `errorCode` and
+   * `coverage` set.
+   */
+  requireFootage?: "any" | "full" | "off";
+};
+
+/**
+ * A recorded-footage coverage window from `/camera/getPresenceWindows`, normalized to epoch ms.
+ * `source: "cloud"` footage is archived and always retrievable; `source: "local"` footage lives
+ * on the camera's SD card and is only retrievable while the camera is online/reachable.
+ */
+export type RhombusFootageWindow = {
+  startMs: number;
+  endMs: number;
+  source: "cloud" | "local";
+};
+
+/**
+ * Footage coverage for a fetched time range. `fetchedStartMs`/`fetchedEndMs` bound where the
+ * answer is known: outside them, availability is **unknown** (not a gap). An empty `windows`
+ * array inside the fetched range means confirmed no footage there.
+ */
+export type RhombusFootageAvailability = {
+  windows: RhombusFootageWindow[];
+  fetchedStartMs: number;
+  fetchedEndMs: number;
+};
+
+/** A confirmed no-footage range (the stream would play "VIDEO NOT AVAILABLE" placeholders here). */
+export type RhombusFootageGap = { startMs: number; endMs: number };
+
+/**
+ * Footage coverage of a specific range (e.g. a clip selection). `coverageRatio` is
+ * `coveredMs / totalMs`; `gaps` lists the confirmed no-footage sub-ranges.
+ */
+export type RhombusRangeCoverage = {
+  coveredMs: number;
+  totalMs: number;
+  coverageRatio: number;
+  gaps: RhombusFootageGap[];
 };
 
 /** A drawable region on the {@link Timeline}: an event band or an unavailable-footage gap. */
@@ -425,6 +495,11 @@ export type TimelineColors = {
   availabilityActive?: string;
   /** Empty / future portion of the availability bar. */
   availabilityInactive?: string;
+  /**
+   * Confirmed no-footage portion of the availability bar (drawn only when `fetchAvailability`
+   * has real coverage data for that region).
+   */
+  availabilityGap?: string;
   /** The playhead line. */
   playhead?: string;
   /** The hover indicator line. */
@@ -497,6 +572,14 @@ export type TimelineProps = RhombusMediaBaseProps & {
   fetchSeekPoints?: boolean;
   /** Include generic motion events in the seekpoint fetch (`includeAnyMotion`). */
   includeAnyMotion?: boolean;
+  /**
+   * Fetch recorded-footage availability for the visible range from `/camera/getPresenceWindows`
+   * and render confirmed no-footage regions on the availability bar in `availabilityGap` color.
+   * Default `false` standalone. Requires the `/api/presence-windows` proxy route in proxy mode.
+   */
+  fetchAvailability?: boolean;
+  /** Called with normalized availability whenever an availability fetch completes. */
+  onAvailabilityLoaded?: (availability: RhombusFootageAvailability) => void;
   /** Static marks to render in addition to (or instead of) fetched seekpoints. */
   marks?: TimelineMark[];
   /** Called with normalized seekpoints whenever a fetch completes. */
@@ -517,6 +600,15 @@ export type RhombusPlayerTimelineConfig = {
   /** Fetch event seekpoints. Default `true`. */
   fetchSeekPoints?: boolean;
   includeAnyMotion?: boolean;
+  /**
+   * Fetch recorded-footage availability and render no-footage gaps on the availability bar.
+   * Default: enabled when `apiOverrideBaseUrl` is set (proxy mode — the proxy attaches the API
+   * key), disabled in direct mode until federated-token auth for `getPresenceWindows` is
+   * confirmed for your org. Pass `true`/`false` to override either way.
+   */
+  fetchAvailability?: boolean;
+  /** Called with normalized availability whenever an availability fetch completes. */
+  onAvailabilityLoaded?: (availability: RhombusFootageAvailability) => void;
   marks?: TimelineMark[];
   height?: number;
   /** Override the timeline's canvas-drawn colors (seekpoints, availability bar, playhead, …). */
@@ -566,6 +658,12 @@ export type RhombusPlayerState = {
   canSaveClip: boolean;
   /** The current clip selection (when the user is in clip mode), else `null`. */
   clipSelection: { startMs: number; endMs: number } | null;
+  /**
+   * Footage coverage of the current clip selection, computed from timeline-fetched
+   * availability. `null`/absent when unknown (no selection, availability not fetched, or the
+   * selection extends outside the fetched range) — unknown must not be treated as "no footage".
+   */
+  clipSelectionCoverage?: RhombusRangeCoverage | null;
   /** Current clip export status, if one is in progress or finished. */
   clipExport?: RhombusClipExportStatus;
 };

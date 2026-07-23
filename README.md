@@ -22,6 +22,7 @@ Your Rhombus **API key never ships to the browser**. Everything is built around 
   - [Imperative handle (`ref`)](#imperative-handle-ref)
   - [Observable state](#observable-state)
   - [Choosing which controls render](#choosing-which-controls-render)
+  - [Go to date (picker)](#go-to-date-gotodate-control--rhombusdatetimepicker)
   - [Styling the controls](#styling-the-controls)
   - [Snapshots](#snapshots)
   - [Save Clip](#save-clip)
@@ -158,7 +159,7 @@ common to all players.)
 | `connectionMode`             | `"wan" | "lan"`                                       | —        | `"wan"`                               | Which `getMediaUris` URIs to use. See [WAN vs LAN](#wan-vs-lan).                                                                                                           |
 | `apiOverrideBaseUrl`         | `string`                                              | —        | —                                     | Base for the token **and** media requests (proxy mode). Required for built-in [Save Clip](#save-clip). When omitted, media is fetched directly from Rhombus.               |
 | `rhombusApiBaseUrl`          | `string`                                              | —        | `https://api2.rhombussystems.com/api` | Rhombus REST base when `apiOverrideBaseUrl` is omitted.                                                                                                                    |
-| `paths`                      | `{ federatedToken?, mediaUris?, footageSeekpoints? }` | —        | see [backend](#backend-contract)      | Override route paths.                                                                                                                                                      |
+| `paths`                      | `{ federatedToken?, mediaUris?, footageSeekpoints?, presenceWindows? }` | —        | see [backend](#backend-contract)      | Override route paths.                                                                                                                                                      |
 | `federatedSessionToken`      | `string`                                              | —        | —                                     | Supply & rotate your own token; the SDK skips its token endpoint.                                                                                                          |
 | `tokenDurationSec`           | `number`                                              | —        | `86400`                               | Requested token TTL (SDK-managed mode).                                                                                                                                    |
 | `headers`                    | `HeadersInit`                                         | —        | —                                     | Static headers for the token request (+ media when `apiOverrideBaseUrl` set).                                                                                              |
@@ -324,7 +325,7 @@ as a runtime constant (`RhombusPlayerControl.Play`, etc.), so use plain strings 
 members — whichever you prefer:
 
 ```tsx
-"play" | "goLive" | "rewind" | "speed" | "zoom" | "snapshot" | "saveClip" | "timeline" | "liveType" | "videoFit"
+"play" | "goLive" | "rewind" | "speed" | "zoom" | "snapshot" | "saveClip" | "timeline" | "liveType" | "videoFit" | "goToDate"
 ```
 
 ```tsx
@@ -342,6 +343,40 @@ import { RhombusPlayer, RhombusPlayerControl } from "@rhombussystems/react";
 // Headless — no built-in UI at all; drive everything through the ref:
 <RhombusPlayer ref={player} cameraUuid="…" controls={[]} />
 ```
+
+### Go to date (`"goToDate"` control / `RhombusDateTimePicker`)
+
+The toolbar includes a **date/time jump picker** (the `"goToDate"` control, on by default):
+a calendar + time-of-day popover that seeks the player to any moment — the SDK counterpart of
+the Rhombus Console's toolbar date picker. When [footage availability](#footage-availability)
+is enabled, days with **no recorded footage** are struck through and disabled (one
+`getPresenceWindows` fetch per viewed month, cached; failures just leave days enabled).
+
+The component is also exported standalone for custom layouts — it interops with any player via
+`seekTo`:
+
+```tsx
+import { RhombusDateTimePicker } from "@rhombussystems/react";
+
+<RhombusDateTimePicker
+  value={positionMs}                              // epoch ms (or null)
+  onChange={(ms) => playerRef.current?.seekTo(ms)}
+  cameraUuid="…"                                  // optional: enables no-footage day disabling
+  apiOverrideBaseUrl="https://your-api.example.com"
+  minTimeMs={retentionFloorMs}                    // optional: disable pre-retention days
+  direction="down"                                // "up" for bottom toolbars (player default)
+/>
+```
+
+All calendar math is in the viewer's local time zone (consistent with the Timeline). Style it
+via the `rhombus-datepicker-*` classes (zero-specificity defaults, like the control bar) or the
+`classNames={{ anchor, popover }}` prop.
+
+Inside `RhombusPlayer`, a picker jump that lands outside the visible timeline window also
+re-centers the timeline on the target (in-window seeks — i.e. timeline clicks — never move the
+window). In custom layouts composing the standalone picker with a standalone `Timeline`, you
+own the window: update your `rangeStartMs`/`rangeEndMs` in the same `onChange` that calls
+`seekTo`.
 
 ### Video display / fit
 
@@ -525,6 +560,7 @@ type RhombusSaveClipConfig = {
   progressTimeoutMs?: number;  // give up polling a stuck render. Default 300000 (5 min); 0 = never
   defaultVisibility?: RhombusClipVisibility; // "ORG_WIDE" (default) | "PRIVATE" | "ROLE_RESTRICTED"
   showOptionsForm?: boolean;   // show the title/description/visibility form. Default true
+  requireFootage?: "any" | "full" | "off"; // footage pre-check policy. Default "any" (see below)
 };
 
 type RhombusClipExportOptions = {
@@ -542,8 +578,29 @@ type RhombusClipExportStatus = {
   currentOperation?: string;
   downloadUrl?: string;      // set when complete
   error?: string;
+  errorCode?: "no-footage" | "partial-footage"; // set when the footage pre-check blocked the export
+  coverage?: RhombusRangeCoverage;              // footage coverage of the range, when the check ran
 };
 ```
+
+#### Footage pre-check (`requireFootage`)
+
+Rhombus renders time ranges with **no recorded footage** (camera offline during the window, or
+footage past retention) as "VIDEO NOT AVAILABLE" placeholder frames — and `/video/spliceV3`
+happily renders a clip over such a range, returning a "successful" clip with no real video in
+it. Before submitting an export, the player therefore fetches
+[`/camera/getPresenceWindows`](#footage-availability) for the selected range and applies
+`requireFootage`:
+
+- `"any"` (default) — block only when the range has **zero** recorded footage.
+- `"full"` — block when the range has **any** confirmed gap.
+- `"off"` — no pre-check (legacy behavior).
+
+A blocked export emits `phase: "error"` with `errorCode` (`"no-footage"` / `"partial-footage"`)
+and `coverage` — key both your custom UI messages off `errorCode`, not the human-readable
+`error` string. Exports that proceed carry `coverage` on every subsequent status so you can
+warn about partial footage. The check **fails open**: if availability can't be fetched (missing
+proxy route, timeout), the export proceeds ungated and `coverage` is absent.
 
 **Build your own clip UI** instead of the built-in form: read the live selection from
 `onClipRangeSelect` (or `getState().clipSelection`) and call the imperative handle with your own
@@ -566,12 +623,32 @@ type RhombusPlayerTimelineConfig = {
   windowSec?: number;        // span of the scrubber, seconds. Default 86400 (a full day)
   fetchSeekPoints?: boolean; // fetch event markers from /camera/getFootageSeekpointsV2. Default true
   includeAnyMotion?: boolean;
+  fetchAvailability?: boolean; // fetch footage coverage from /camera/getPresenceWindows and draw
+                               // no-footage gaps on the availability bar. Default: true in proxy
+                               // mode (apiOverrideBaseUrl set), false in direct mode.
+  onAvailabilityLoaded?: (availability: RhombusFootageAvailability) => void;
   marks?: TimelineMark[];    // extra static event bands / gaps
   colors?: TimelineColors;   // recolor seekpoints, bars, playhead, buttons (see below)
   height?: number;           // px, default 56
   onSeekPointsLoaded?: (points: RhombusFootageSeekPoint[]) => void; // diagnostics
 };
 ```
+
+#### Footage availability
+
+With `fetchAvailability` on, the availability bar stops pretending all past time is recorded:
+ranges with **confirmed no footage** render in `colors.availabilityGap` (default a muted red) —
+the same ranges the Rhombus stream would play as "VIDEO NOT AVAILABLE" placeholder frames. Gaps
+are only drawn where the answer is actually known (inside the fetched range, in the past, and
+older than a ~2-minute live-edge grace window for presence-ingest lag); everything else keeps
+the legacy look. The in-clip-mode toolbar also shows a warning (and disables Save, per
+[`requireFootage`](#footage-pre-check-requirefootage)) when the selection overlaps a gap.
+
+The raw client + coverage math are exported for custom UIs: `fetchPresenceWindows`,
+`mergeFootageWindows`, `computeFootageGaps`, `computeRangeCoverage`, and the
+`RhombusFootageWindow` / `RhombusFootageAvailability` / `RhombusRangeCoverage` types. Windows
+carry `source: "cloud" | "local"` — **local** windows live on the camera's SD card and are only
+retrievable while the camera is online; **cloud** windows are always retrievable.
 
 By default the window is a **24h span aligned to local midnight** (Console-style). `RhombusPlayer`
 renders ‹/› chevrons that pan by half a span (**±12h** at the day view), and **−/+ zoom buttons +
@@ -715,7 +792,7 @@ These come from `RhombusPlayerBaseProps` and are accepted by **every** player:
 | `connectionMode`        | `"wan" | "lan"`                                       | `"wan"`¹                              | Which `getMediaUris` URIs to use. See [WAN vs LAN](#wan-vs-lan).                                                                                       |
 | `apiOverrideBaseUrl`    | `string`                                              | —                                     | Base for the token **and** media requests. Set for proxy mode. When omitted, media is fetched **directly from Rhombus** (needs a domain-scoped token). |
 | `rhombusApiBaseUrl`     | `string`                                              | `https://api2.rhombussystems.com/api` | Rhombus REST base when `apiOverrideBaseUrl` is omitted.                                                                                                |
-| `paths`                 | `{ federatedToken?, mediaUris?, footageSeekpoints? }` | see [backend](#backend-contract)      | Override route paths.                                                                                                                                  |
+| `paths`                 | `{ federatedToken?, mediaUris?, footageSeekpoints?, presenceWindows? }` | see [backend](#backend-contract)      | Override route paths.                                                                                                                                  |
 | `federatedSessionToken` | `string`                                              | —                                     | Supply & rotate your own token; the SDK skips its token endpoint.                                                                                      |
 | `tokenDurationSec`      | `number`                                              | `86400`                               | Requested token TTL (SDK-managed mode).                                                                                                                |
 | `headers`               | `HeadersInit`                                         | —                                     | Static headers for the token request (+ media when `apiOverrideBaseUrl` set).                                                                          |
@@ -1165,6 +1242,16 @@ When `Timeline`/`RhombusPlayer` fetches seekpoints, it `POST`s `paths.footageSee
 (proxy default `/api/footage-seekpoints`) with `{ cameraUuid, startTime, duration, includeAnyMotion }`
 (seconds). Forward to Rhombus `POST /camera/getFootageSeekpointsV2` and return the JSON as-is.
 
+### Presence windows (footage availability, optional)
+
+When `Timeline`/`RhombusPlayer` fetches footage availability (and before every built-in clip
+export unless `requireFootage: "off"`), it `POST`s `paths.presenceWindows` (proxy default
+`/api/presence-windows`) with `{ cameraUuid, startTimeSec, durationSec }` (seconds). Forward to
+Rhombus `POST /camera/getPresenceWindows` **with your server-side API key** and return the JSON
+as-is (`{ presenceWindows: { VideoCloud: [...], VideoLocal: [...] } }`). If the route is
+missing, availability rendering stays in the legacy mode and the clip pre-check fails open —
+nothing breaks, you just don't get gap detection.
+
 ### Clip routes (built-in Save Clip)
 
 Built-in export needs three routes (defaults shown; override via `saveClip.paths`). All are
@@ -1196,11 +1283,12 @@ streams the file back.
 - `RhombusBufferedPlayer` — DASH live & VOD.
 - `RhombusRealtimePlayer` — realtime H.264 live.
 - `RhombusPlayerControls` — the default control bar (exported for advanced composition).
+- `RhombusDateTimePicker` — standalone date/time jump picker (footage-aware disabled days).
 - `Timeline` — standalone canvas scrubber.
 
 **Constants** (value **and** type — usable as named members or plain strings)
 
-- `RhombusPlayerControl` — `{ Play, GoLive, Rewind, Speed, Zoom, Snapshot, SaveClip, Timeline, LiveType, VideoFit }`.
+- `RhombusPlayerControl` — `{ Play, GoLive, Rewind, Speed, Zoom, Snapshot, SaveClip, Timeline, LiveType, VideoFit, GoToDate }`.
 - `RhombusAudioPlayerControl` — `{ Play, GoLive, Rewind, Speed, Volume, Timeline }`.
 
 **Types**
@@ -1218,6 +1306,8 @@ streams the file back.
 `RhombusClipVisibility`, `RhombusClipExportOptions`, `RhombusClipExportPhase`,
 `RhombusClipExportStatus`, `RhombusSaveClipConfig`, `RhombusPlayerTimelineConfig`.
 - Timeline: `TimelineMark`, `TimelineColors`, `RhombusFootageSeekPoint`.
+- Footage availability: `RhombusFootageWindow`, `RhombusFootageAvailability`, `RhombusFootageGap`,
+`RhombusRangeCoverage`, `FetchPresenceWindowsOptions`.
 - Quality / mode: `RhombusBufferedStreamQuality`, `RhombusRealtimeStreamQuality`,
 `RhombusConnectionMode`, `RhombusRealtimeConnectionMode`, `RhombusPlayerPaths`.
 - Misc: `FederatedTokenFetchResult`, `RhombusDashPlayerCallbacks`, `RhombusDashQualityCallbacks`.
@@ -1236,6 +1326,7 @@ streams the file back.
 | `snapshotCanvasElement(canvas, opts)` / `snapshotVideoElement(video, opts)`                                               | Capture a frame → `RhombusSnapshotResult`.                        |
 | `chooseVodAnchor`, `isWithinWindow`, `vodOffsetToWallClock`, `wallClockToVodOffset`, `shouldSwitchToLive`, `isAtLiveEdge` | Pure VOD time-math helpers used by the switching logic.           |
 | `requestClipSplice(options)` / `fetchClipProgress(options)` / `buildClipDownloadUrl(options)`                             | Build your own Save Clip flow.                                    |
+| `fetchPresenceWindows(options)` / `mergeFootageWindows` / `computeFootageGaps` / `computeRangeCoverage`                   | Footage-availability client + coverage math for custom gap UIs.   |
 
 
 ---
@@ -1275,6 +1366,8 @@ return supportsRealtime
 | **Realtime never renders, no errors**                | Browser lacks WebCodecs H.264 (e.g. Firefox). Use buffered, or let `RhombusPlayer` fall back.                                                        |
 | **LAN won't connect**                                | Browser can't reach the device host, or mixed content (HTTPS page → HTTP device). Check routing/firewall and protocol.                               |
 | **VOD / timeline empty for a range**                 | No recorded footage for that window. Pick a range when the camera was recording.                                                                     |
+| **404 on `/api/presence-windows`**                   | Availability route not implemented / wrong path. Implement it (forward `/camera/getPresenceWindows`) or set `paths.presenceWindows`. Harmless otherwise: gap rendering stays off and the clip pre-check fails open. |
+| **VOD plays a "VIDEO NOT AVAILABLE" pattern**        | Rhombus serves placeholder frames (HTTP 200) where footage doesn't exist — not a player bug. Enable `timeline.fetchAvailability` + the presence-windows route to surface those gaps and gate clip exports.          |
 | **Short blip on quality / token change (realtime)**  | Expected — realtime reconnects the socket. Buffered changes are seamless.                                                                            |
 
 
