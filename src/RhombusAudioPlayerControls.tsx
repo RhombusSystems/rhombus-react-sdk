@@ -130,7 +130,7 @@ export function RhombusAudioPlayerControls({
                 onClick={() => api.setMuted(!state.muted)}
                 aria-label={state.muted ? "Unmute audio" : "Mute audio"}
               >
-                {state.muted ? "Muted" : "Sound"}
+                {state.muted ? "Unmute" : "Mute"}
               </button>
               <input
                 type="range"

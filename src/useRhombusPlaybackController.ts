@@ -32,6 +32,9 @@ type PlaybackControllerInternals = {
   ) => void;
   hasMatchingDr40VideoOwner: (uuid: string) => boolean;
   subscribeParticipants: (listener: () => void) => () => void;
+  subscribePlaybackActivation: (
+    listener: (action: "play" | "unmute") => void
+  ) => () => void;
 };
 
 const controllerInternals = new WeakMap<RhombusPlaybackController, PlaybackControllerInternals>();
@@ -85,14 +88,27 @@ export function useRhombusPlaybackController(
       seekSequence: 0,
     };
   });
+  const playbackActivationListenersRef = useRef(
+    new Set<(action: "play" | "unmute") => void>()
+  );
+  const notifyPlaybackActivation = useCallback(
+    (action: "play" | "unmute") => {
+      for (const listener of playbackActivationListenersRef.current) {
+        listener(action);
+      }
+    },
+    []
+  );
 
   const play = useCallback(() => {
+    notifyPlaybackActivation("play");
     setState(previous => ({ ...previous, playing: true }));
-  }, []);
+  }, [notifyPlaybackActivation]);
   const pause = useCallback(() => {
     setState(previous => ({ ...previous, playing: false }));
   }, []);
   const goLive = useCallback(() => {
+    notifyPlaybackActivation("play");
     setState(previous => ({
       ...previous,
       mode: "live",
@@ -102,7 +118,7 @@ export function useRhombusPlaybackController(
       isAtLiveEdge: true,
       seekSequence: previous.seekSequence + 1,
     }));
-  }, []);
+  }, [notifyPlaybackActivation]);
   const seekTo = useCallback((wallClockMs: number) => {
     if (!Number.isFinite(wallClockMs)) return;
     const now = Date.now();
@@ -141,8 +157,9 @@ export function useRhombusPlaybackController(
     }));
   }, []);
   const setMuted = useCallback((muted: boolean) => {
+    if (!muted) notifyPlaybackActivation("unmute");
     setState(previous => ({ ...previous, muted }));
-  }, []);
+  }, [notifyPlaybackActivation]);
   const setVolume = useCallback((volume: number) => {
     if (!Number.isFinite(volume)) return;
     setState(previous => ({ ...previous, volume: clamp(volume, 0, 1) }));
@@ -247,6 +264,10 @@ export function useRhombusPlaybackController(
       subscribeParticipants(listener) {
         listenersRef.current.add(listener);
         return () => listenersRef.current.delete(listener);
+      },
+      subscribePlaybackActivation(listener) {
+        playbackActivationListenersRef.current.add(listener);
+        return () => playbackActivationListenersRef.current.delete(listener);
       },
     };
   }

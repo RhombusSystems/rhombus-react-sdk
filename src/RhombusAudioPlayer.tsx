@@ -719,6 +719,26 @@ export const RhombusAudioPlayer = forwardRef<
     resolvedTransport,
   ]);
 
+  // Resume browser audio directly inside play/unmute actions. Delaying this to
+  // the state effect above loses the user-activation gesture in some browsers.
+  useEffect(
+    () =>
+      controllerInternals.subscribePlaybackActivation(action => {
+        if (action === "unmute") {
+          engineRef.current?.setMuted(false);
+          if (audioElementRef.current) audioElementRef.current.muted = false;
+        }
+        if (action === "unmute" && !controller.state.playing) return;
+        const engine = engineRef.current;
+        if (engine) void engine.play().catch(reportError);
+        const element = audioElementRef.current;
+        if (element && resolvedTransport === "dash-vod") {
+          void element.play().catch(reportError);
+        }
+      }),
+    [controller, controllerInternals, reportError, resolvedTransport]
+  );
+
   // Progress and follower drift correction.
   useEffect(() => {
     if (resolvedTransport === "embedded-dr40") return;

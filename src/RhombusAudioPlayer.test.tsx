@@ -1,4 +1,11 @@
-import { act, cleanup, render, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RhombusAudioPlayer } from "./RhombusAudioPlayer.js";
 
@@ -6,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   engines: [] as Array<{
     destroy: ReturnType<typeof vi.fn>;
     enqueueOpus: ReturnType<typeof vi.fn>;
+    play: ReturnType<typeof vi.fn>;
+    setMuted: ReturnType<typeof vi.fn>;
   }>,
 }));
 
@@ -205,6 +214,40 @@ describe("RhombusAudioPlayer transports", () => {
       })
     );
     expect(socket.close).toHaveBeenCalled();
+  });
+
+  it("resumes Web Audio directly from the unmute gesture", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(mediaResponse), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <RhombusAudioPlayer
+        source={{ type: "audio-gateway", uuid: "gateway-1" }}
+        federatedSessionToken="token"
+        controls={["volume"]}
+      />
+    );
+
+    await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+    const engine = mocks.engines[0];
+    const playCallsBeforeUnmute = engine.play.mock.calls.length;
+    fireEvent.click(
+      screen.getByRole("button", { name: "Unmute audio" })
+    );
+
+    expect(engine.setMuted).toHaveBeenCalledWith(false);
+    expect(engine.play.mock.calls.length).toBeGreaterThan(
+      playCallsBeforeUnmute
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Mute audio" })
+      ).toBeTruthy()
+    );
   });
 
   it("authenticates and aborts decoded historical segment requests on cleanup", async () => {
