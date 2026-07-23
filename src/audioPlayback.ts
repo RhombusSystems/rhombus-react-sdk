@@ -88,23 +88,54 @@ export function pickAudioMediaUris(
     throw new Error("Invalid audio media URIs response");
   }
   const record = mediaJson as Record<string, unknown>;
-  const live =
-    connectionMode === "wan"
-      ? firstMediaUri(record.wanLiveOpusUri)
-      : firstMediaUri(record.lanLiveOpusUris) ??
-        firstMediaUri(record.lanLiveOpusUri);
-  const vod =
-    connectionMode === "wan"
-      ? firstMediaUri(record.wanVodMpdUriTemplate)
-      : firstMediaUri(record.lanVodMpdUrisTemplates);
-  if (!live) {
+  if (record.error === true) {
+    const upstreamMessage =
+      typeof record.errorMsg === "string" && record.errorMsg.trim()
+        ? record.errorMsg.trim()
+        : "the Rhombus API returned an error";
+    throw new Error(`Audio media URIs request failed: ${upstreamMessage}`);
+  }
+
+  const wanLive = firstMediaUri(record.wanLiveOpusUri);
+  const lanLive =
+    firstMediaUri(record.lanLiveOpusUris) ??
+    firstMediaUri(record.lanLiveOpusUri);
+  const wanVod = firstMediaUri(record.wanVodMpdUriTemplate);
+  const lanVod = firstMediaUri(record.lanVodMpdUrisTemplates);
+
+  if (!wanLive && !lanLive && !wanVod && !lanVod) {
+    const sourceLabel =
+      source.type === "audio-gateway" ? "A100 audio gateway" : "DR40";
     throw new Error(
-      `Invalid audio media URIs response: missing ${connectionMode} live Opus URI`
+      `No audio media URIs were returned for this ${sourceLabel}. ` +
+        "Verify that the UUID belongs to a device visible to the authenticated organization."
+    );
+  }
+
+  const live =
+    connectionMode === "wan" ? wanLive : lanLive;
+  const vod =
+    connectionMode === "wan" ? wanVod : lanVod;
+  if (!live) {
+    const alternateMode = connectionMode === "wan" ? "lan" : "wan";
+    const alternateAvailable =
+      connectionMode === "wan" ? Boolean(lanLive) : Boolean(wanLive);
+    throw new Error(
+      `No ${connectionMode.toUpperCase()} live Opus URI was returned.` +
+        (alternateAvailable
+          ? ` Try connectionMode="${alternateMode}".`
+          : "")
     );
   }
   if (!vod) {
+    const alternateMode = connectionMode === "wan" ? "lan" : "wan";
+    const alternateAvailable =
+      connectionMode === "wan" ? Boolean(lanVod) : Boolean(wanVod);
     throw new Error(
-      `Invalid audio media URIs response: missing ${connectionMode} VOD MPD template`
+      `No ${connectionMode.toUpperCase()} historical audio URI was returned.` +
+        (alternateAvailable
+          ? ` Try connectionMode="${alternateMode}".`
+          : " Confirm that the authenticated user has historical-video access.")
     );
   }
   return {

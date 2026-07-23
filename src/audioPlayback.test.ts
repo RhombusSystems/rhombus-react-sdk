@@ -25,6 +25,9 @@ describe("audio media URI resolution", () => {
 
   it("selects WAN and LAN audio fields without changing DR40 paths", () => {
     const response = {
+      error: false,
+      lanCheckUrls: ["https://lan.example/check"],
+      lanLiveMpdUris: ["https://lan.example/live/file.mpd"],
       wanLiveOpusUri: "wss://wan.example/audio/ws",
       lanLiveOpusUris: ["wss://lan.example/audio/ws"],
       wanVodMpdUriTemplate: "https://wan.example/{START_TIME}/{DURATION}/file.mpd",
@@ -50,6 +53,48 @@ describe("audio media URI resolution", () => {
       vodMpdUriTemplate:
         "https://lan.example/{START_TIME}/{DURATION}/file.mpd",
     });
+  });
+
+  it("explains the empty response returned for an unknown or inaccessible device", () => {
+    expect(() =>
+      pickAudioMediaUris(
+        {
+          error: false,
+          lanCheckUrls: [],
+          lanLiveMpdUris: [],
+          lanLiveOpusUris: [],
+          lanVodMpdUrisTemplates: [],
+        },
+        { type: "audio-gateway", uuid: "unknown-gateway" },
+        "wan"
+      )
+    ).toThrow(
+      "No audio media URIs were returned for this A100 audio gateway. " +
+        "Verify that the UUID belongs to a device visible to the authenticated organization."
+    );
+  });
+
+  it("preserves upstream errors and suggests an available network mode", () => {
+    expect(() =>
+      pickAudioMediaUris(
+        { error: true, errorMsg: "Audio access denied" },
+        { type: "dr40", uuid: "doorbell" },
+        "wan"
+      )
+    ).toThrow("Audio media URIs request failed: Audio access denied");
+
+    expect(() =>
+      pickAudioMediaUris(
+        {
+          lanLiveOpusUris: ["wss://lan.example/audio"],
+          lanVodMpdUrisTemplates: [
+            "https://lan.example/{START_TIME}/{DURATION}/file.mpd",
+          ],
+        },
+        { type: "audio-gateway", uuid: "gateway" },
+        "wan"
+      )
+    ).toThrow('No WAN live Opus URI was returned. Try connectionMode="lan".');
   });
 
   it("uses exact direct endpoint bodies and federated headers", async () => {
