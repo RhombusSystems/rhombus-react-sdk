@@ -103,6 +103,7 @@ export const RhombusBufferedPlayer = forwardRef<
   const stallBufferLoadedRef = useRef(false);
   const stallLastProgressAtMsRef = useRef(0);
   const stallLastCurrentTimeRef = useRef(0);
+  const stallPausedWhileHiddenRef = useRef(false);
 
   const bufferedQRef = useRef<RhombusBufferedStreamQuality>("HIGH");
   const applyBQRef = useRef(true);
@@ -370,6 +371,15 @@ export const RhombusBufferedPlayer = forwardRef<
         const vid = videoRef.current;
         if (!vid) return;
 
+        // Hidden tab: browsers throttle timers and pause or suspend the media pipeline, so a
+        // frozen currentTime is expected (not a stall), and a player (re)created while hidden
+        // stays suspended too — recovery cannot succeed until the tab is visible again.
+        if (isRhombusDocumentHidden()) {
+          stallLastProgressAtMsRef.current = Date.now();
+          stallLastCurrentTimeRef.current = vid.currentTime;
+          return;
+        }
+
         // Treat user-initiated pause/seek/end as healthy (especially for VOD).
         if (vid.paused || vid.ended || vid.seeking) {
           stallLastProgressAtMsRef.current = Date.now();
@@ -420,6 +430,40 @@ export const RhombusBufferedPlayer = forwardRef<
         startHealthyPlaybackTimer();
       }
     };
+
+    // A pause that arrives while the document is hidden is browser-initiated background
+    // suspension, not a user action; remember it so playback resumes on return.
+    function handleVideoPause() {
+      if (isRhombusDocumentHidden()) {
+        stallPausedWhileHiddenRef.current = true;
+      }
+    }
+
+    function handleVideoPlay() {
+      stallPausedWhileHiddenRef.current = false;
+    }
+
+    function handleVisibilityChange() {
+      if (effectCancelled || isRhombusDocumentHidden()) return;
+      // Back to visible: the stall interval may not have ticked for a long time while
+      // hidden, so re-baseline before it next fires — playback gets a full stall window
+      // to recover before the watchdog may legitimately declare a stall.
+      stallLastProgressAtMsRef.current = Date.now();
+      stallLastCurrentTimeRef.current = videoRef.current?.currentTime ?? 0;
+      if (stallPausedWhileHiddenRef.current) {
+        stallPausedWhileHiddenRef.current = false;
+        const vid = videoRef.current;
+        if (vid && vid.paused && !vid.ended) {
+          void vid.play().catch(() => {
+            /* autoplay policy may still block; the user can resume manually */
+          });
+        }
+      }
+    }
+
+    video.addEventListener("pause", handleVideoPause);
+    video.addEventListener("play", handleVideoPlay);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     const scheduleSdkTokenRefresh = (
       lastResult: FederatedTokenFetchResult,
@@ -485,6 +529,10 @@ export const RhombusBufferedPlayer = forwardRef<
 
     return () => {
       effectCancelled = true;
+      video.removeEventListener("pause", handleVideoPause);
+      video.removeEventListener("play", handleVideoPlay);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      stallPausedWhileHiddenRef.current = false;
       clearSdkRefreshTimer();
       clearRecoveryTimer();
       clearHealthyTimer();
@@ -589,6 +637,10 @@ export const RhombusBufferedPlayer = forwardRef<
     />
   );
 });
+
+function isRhombusDocumentHidden(): boolean {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
 
 function isRhombusSafariDash(): boolean {
   if (typeof navigator === "undefined") return false;

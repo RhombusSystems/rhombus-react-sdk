@@ -1789,7 +1789,11 @@ Set `maxRetryIntervalMs={0}` to disable; pass `onRecoveryAttempt` to drive "reco
 
 **Buffered (DASH)** rebuilds Dash.js when a recoverable error fires, the initial buffer never
 loads within `stallTimeoutMs`, or `currentTime` stops advancing for `stallTimeoutMs` (not
-paused/seeking/ended).
+paused/seeking/ended). Time spent in a hidden/background tab never counts toward the stall
+watchdog — browsers throttle timers and pause or suspend muted video there, so frozen playback
+is expected. When the tab becomes visible again the watchdog re-arms with a fresh
+`stallTimeoutMs` window, and playback resumes automatically if the browser paused it in the
+background.
 
 **Realtime video (WebSocket)** reopens the socket on `onerror`/unexpected `onclose`, if it fails to
 open within ~8s, if no decoded frame arrives within `stallTimeoutMs` (the classic "WAN black
