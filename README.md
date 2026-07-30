@@ -1,13 +1,13 @@
 # Rhombus React SDK — `@rhombussystems/react`
 
 React + TypeScript components for embedding **Rhombus video and audio** in your own app.
-The SDK supports MPEG-DASH video, low-latency H.264, live A100/DR40 Opus audio, and
-historical audio with synchronized wall-clock controls.
+The SDK supports MPEG-DASH video, low-latency H.264, live and historical A100/DR40
+audio, synchronized wall-clock controls, and browser-microphone talkback.
 
 Your Rhombus **API key never ships to the browser**. Everything is built around short-lived
 **federated session tokens** minted by your backend (see [Authentication](#authentication--tokens)).
 
-> **Version:** this guide tracks `@rhombussystems/react` **2.1.0**. React **18+**.
+> **Version:** this guide tracks `@rhombussystems/react` **2.2.0**. React **18+**.
 
 ---
 
@@ -15,7 +15,13 @@ Your Rhombus **API key never ships to the browser**. Everything is built around 
 
 - [Install](#install)
 - [Quick start](#quick-start)
+- [Audio full-stack quick start](#audio-full-stack-quick-start)
 - [Choosing a component](#choosing-a-component)
+- [`RhombusMediaPlayer` — complete video, audio, and talkback](#rhombusmediaplayer--complete-video-audio-and-talkback)
+  - [Identity props: why `audioSource` is required](#identity-props-why-audiosource-is-required)
+  - [Copy-paste defaults](#copy-paste-defaults)
+  - [`RhombusMediaPlayer` props](#rhombusmediaplayer-props)
+  - [Styling and imperative access](#styling-and-imperative-access)
 - [`RhombusPlayer` — the unified player](#rhombusplayer--the-unified-player)
   - [How Live ⇄ VOD switching works](#how-live--vod-switching-works)
   - [Props](#rhombusplayer-props)
@@ -40,6 +46,13 @@ Your Rhombus **API key never ships to the browser**. Everything is built around 
   - [Callbacks, state, and recovery](#audio-callbacks-state-and-recovery)
   - [Authentication and network modes](#audio-authentication-and-network-modes)
   - [Styling and browser behavior](#audio-styling-and-browser-behavior)
+- [`RhombusTalkback` — A100 and DR40 two-way audio](#rhombustalkback--a100-and-dr40-two-way-audio)
+  - [Quick starts](#talkback-quick-starts)
+  - [Automatic click/hold behavior](#automatic-clickhold-behavior)
+  - [Talkback while viewing VOD](#talkback-while-viewing-vod)
+  - [Custom controls and styling](#talkback-custom-controls-and-styling)
+  - [State, callbacks, permissions, and safety](#talkback-state-callbacks-permissions-and-safety)
+  - [Talkback authentication and capability policy](#talkback-authentication-and-capability-policy)
 - [`RhombusBufferedPlayer` — DASH live & VOD](#rhombusbufferedplayer--dash-live--vod)
 - [`RhombusRealtimePlayer` — low-latency live](#rhombusrealtimeplayer--low-latency-live)
 - [`Timeline` — standalone scrubber](#timeline--standalone-scrubber)
@@ -51,6 +64,7 @@ Your Rhombus **API key never ships to the browser**. Everything is built around 
 - [Exported API surface](#exported-api-surface)
 - [Browser support](#browser-support)
 - [Troubleshooting](#troubleshooting)
+- [Migrating from 2.1 → 2.2](#migrating-from-21--22)
 - [Migrating from 2.0 → 2.1](#migrating-from-20--21)
 - [Migrating from 1.x → 2.0](#migrating-from-1x--20)
 - [License](#license)
@@ -69,6 +83,8 @@ npm install @rhombussystems/react
   separately.
 - The realtime/canvas path uses the browser **WebCodecs** `VideoDecoder` (Chrome, Edge,
 Safari 16.4+; Firefox H.264 is still limited) — no extra dependency.
+- This is a browser media package. In an SSR framework, load the SDK from a client-only
+  module; Dash.js evaluates browser globals when the package is imported.
 
 ---
 
@@ -91,21 +107,109 @@ export function CameraView() {
 }
 ```
 
-  
-
-
 > ⚠️ **Server setup is required.** The SDK calls *your* origin for a token. Your server must
 > expose `POST /api/federated-token` (the default path) or set `paths.federatedToken` to your
-> route. Built-in **Save Clip** and proxy-mode audio additionally need media proxy routes. See the
-> [Backend contract](#backend-contract).
+> route. Built-in **Save Clip**, proxy-mode audio, and talkback capability policy additionally
+> need application-owned proxy routes. See the [Backend contract](#backend-contract).
 
-  
 Prefer to compose your own layout? Drop down to the individual building blocks — each has a deep-dive section further down the page:
 
 - **[`RhombusBufferedPlayer`](#rhombusbufferedplayer--dash-live--vod)** — MPEG-DASH live & VOD on a real `<video>` element; native pause/seek, widest browser support.
 - **[`RhombusRealtimePlayer`](#rhombusrealtimeplayer--low-latency-live)** — sub-second live H.264 over WebSocket, decoded with WebCodecs onto a `<canvas>` (live only).
 - **[`RhombusAudioPlayer`](#rhombusaudioplayer--a100-and-dr40-audio)** — A100/DR40 live
   Opus and historical audio, standalone or synchronized with video.
+- **[`RhombusTalkback`](#rhombustalkback--a100-and-dr40-two-way-audio)** — send the
+  browser microphone to an A100 or DR40, with Console-aligned RBAC/license/config policy.
+
+---
+
+## Audio full-stack quick start
+
+This is the recommended starting point when a page needs the complete audio feature set:
+
+- live and historical A100 or DR40 listening;
+- video and audio driven by one epoch-ms timeline;
+- browser-microphone talkback;
+- automatic A100/DR40 click-to-talk versus hold-to-talk behavior;
+- optional talkback blocking while the operator is viewing history;
+- matching-source echo suppression while the operator is speaking; and
+- automatic DR40 ownership handoff so embedded video audio is not played twice.
+
+```tsx
+import {
+  RhombusMediaPlayer,
+  type RhombusAudioSource,
+} from "@rhombussystems/react";
+
+type AudioStationProps = {
+  audioSource: RhombusAudioSource;
+  /** Omit for an audio-only page. */
+  cameraUuid?: string;
+};
+
+export function AudioStation({ audioSource, cameraUuid }: AudioStationProps) {
+  return (
+    <RhombusMediaPlayer
+      cameraUuid={cameraUuid}
+      audioSource={audioSource}
+      apiOverrideBaseUrl="/"
+    />
+  );
+}
+```
+
+Use it with an A100 audio gateway:
+
+```tsx
+<AudioStation
+  cameraUuid="CAMERA_UUID"
+  audioSource={{ type: "audio-gateway", uuid: "A100_AUDIO_GATEWAY_UUID" }}
+/>
+```
+
+Use it with a DR40:
+
+```tsx
+<AudioStation
+  cameraUuid="DR40_DEVICE_UUID"
+  audioSource={{ type: "dr40", uuid: "DR40_DEVICE_UUID" }}
+/>
+```
+
+For a DR40, the video `cameraUuid` and `audioSource.uuid` must be the same device UUID for
+automatic audio ownership handoff. An A100 uses its **audio gateway UUID**, which is normally
+different from the camera UUID. `RhombusMediaPlayer` creates and shares the controller
+automatically: the video timeline seeks both streams, the talkback control knows whether the
+page is live or historical, and matching incoming far-audio is suppressed while speaking.
+Use the lower-level composition recipe when your layout needs independent placement of those
+participants.
+
+Your application backend must expose these routes (defaults shown):
+
+| Browser route | Purpose | Rhombus upstream |
+| --- | --- | --- |
+| `POST /api/federated-token` | Mint a short-lived browser token. | `/org/generateFederatedSessionToken` |
+| `POST /api/audio-media-uris` | Resolve A100 or DR40 live/VOD media URIs. | `/audiogateway/getMediaUris` or `/doorbellcamera/getMediaUris` |
+| `POST /api/audio-talkback-capabilities` | Normalize device-scope authorization, Enterprise licensing, speaker configuration, connectivity, and interaction mode. | Accessible-device inventory, `getConfig`, and `/license/getDeviceLicenses` |
+
+The backend keeps the API key secret. The realtime audio WebSocket separately authenticates
+the federated token and must authorize its permission group for the requested device; the
+capability route is a user-interface policy check, not the WebSocket security boundary.
+Copyable route contracts are in [Backend contract](#backend-contract).
+
+Before testing, confirm:
+
+1. The server-side API key can see the selected device through its assigned permission group.
+2. The A100/DR40 has an **Enterprise** device license, its speaker is enabled, and it is online.
+3. The federated token is minted for the browser's deployed domain.
+4. The page is served over HTTPS (or localhost), microphone access is allowed by the browser,
+   operating system, and iframe policy, and the media/worker hosts are allowed by CSP.
+5. The user explicitly unmutes listening audio and starts talkback from a click, tap, or
+   keyboard gesture so browser media activation succeeds.
+
+Talkback is allowed while viewing historical footage by default. Set
+`disableTalkbackInVod` when the operator must return to live before speaking. Talkback always
+reaches the physical device **now**; it is never scheduled at the historical playhead.
 
 ---
 
@@ -114,16 +218,196 @@ Prefer to compose your own layout? Drop down to the individual building blocks �
 
 | Component                   | Transport                                                             | Live latency    | Live | Past (VOD) | Controls               |
 | --------------------------- | --------------------------------------------------------------------- | --------------- | ---- | ---------- | ---------------------- |
+| **`RhombusMediaPlayer`**    | unified video + A100/DR40 audio + talkback                             | sub-second live | ✅    | ✅          | ✅ complete experience  |
 | **`RhombusPlayer`**         | both — realtime canvas for live, DASH for VOD, switched automatically | sub-second live | ✅    | ✅          | ✅ full bar + `ref` API |
 | `RhombusAudioPlayer`        | live Opus + historical DASH/decoded Opus                              | sub-second live | ✅    | ✅          | ✅ full bar + `ref` API |
+| `RhombusTalkback`           | browser microphone → PCM16/WebSocket → A100/DR40 speaker               | sub-second      | ✅    | n/a         | ✅ mic control + `ref` API |
 | **`RhombusBufferedPlayer`** | MPEG-DASH (Dash.js) on a `<video>`                                    | ~few seconds    | ✅    | ✅          | native `<video>`       |
 | **`RhombusRealtimePlayer`** | H.264 / WebSocket → WebCodecs → `<canvas>`                            | sub-second      | ✅    | ❌          | none (always live)     |
 | **`Timeline`**              | none — a canvas scrubber you pair with any media                      | —               | —    | —          | seek UI only           |
 
 
-**Rule of thumb:** reach for `RhombusPlayer` first for video and `RhombusAudioPlayer` for
-audio. Add a shared controller when multiple media participants need one source of truth for
-playback time and state.
+**Rule of thumb:** start with `RhombusMediaPlayer` for the complete experience. Reach for
+`RhombusPlayer`, `RhombusAudioPlayer`, and `RhombusTalkback` separately when the application
+needs custom participant placement or lifecycle. Give separate participants the same shared
+controller when playback time, VOD talk policy, and two-way-audio echo handling must
+coordinate.
+
+---
+
+## `RhombusMediaPlayer` — complete video, audio, and talkback
+
+`RhombusMediaPlayer` is the high-level facade for the most common integration. It composes
+the existing video, audio, talkback, and controller implementations; it does not introduce a
+second transport stack. The required `audioSource` name is deliberately explicit because
+`cameraUuid` identifies a different, optional video participant.
+
+### Identity props: why `audioSource` is required
+
+The two identity props name two different participants:
+
+| Prop | Identifies | When required |
+| --- | --- | --- |
+| `audioSource` | The A100 audio gateway or DR40 used for incoming audio and talkback. | Always |
+| `cameraUuid` | The optional camera that supplies video and the shared timeline. | Only for video + audio |
+
+Therefore omitting `cameraUuid` means **audio-only**; it does not make `audioSource` generic.
+For a DR40 A/V station, use the same DR40 UUID for both props. For an A100 station,
+`audioSource.uuid` is the A100 gateway UUID and `cameraUuid` is the separately chosen camera.
+
+### Copy-paste defaults
+
+The minimum audio-only experience is:
+
+```tsx
+import { RhombusMediaPlayer } from "@rhombussystems/react";
+
+<RhombusMediaPlayer
+  audioSource={{ type: "audio-gateway", uuid: "A100_AUDIO_GATEWAY_UUID" }}
+  apiOverrideBaseUrl="/"
+/>;
+```
+
+Add `cameraUuid` for synchronized video:
+
+```tsx
+<RhombusMediaPlayer
+  cameraUuid="CAMERA_UUID"
+  audioSource={{ type: "audio-gateway", uuid: "A100_AUDIO_GATEWAY_UUID" }}
+  apiOverrideBaseUrl="/"
+/>;
+```
+
+Those examples intentionally pass no control configuration, participant overrides, custom
+styles, callbacks, or external controller. Out of the box, the facade supplies:
+
+- the complete audio toolbar and audio timeline on an audio-only page;
+- the video toolbar and its single shared timeline when `cameraUuid` is present;
+- only volume control on the separate audio row when video owns the timeline;
+- listening audio, initially muted for browser autoplay compatibility;
+- talkback with the device-resolved click-to-talk or hold-to-talk interaction;
+- live and historical playback with synchronized timeline seeks;
+- automatic matching-DR40 audio ownership handoff; and
+- a private shared playback controller that requires no application wiring.
+
+The sibling `rhombus-react-example` project exposes `/media-player` as a dedicated
+out-of-the-box test page. Its selectors are only test-fixture UI; the rendered
+`RhombusMediaPlayer` receives exactly the props shown above. Use its `/audio` page for the
+advanced customization and diagnostics lab.
+
+Defaults:
+
+- talkback is rendered and follows the server-resolved hold/toggle policy;
+- talkback remains available in VOD and always targets the live physical device;
+- one private `RhombusPlaybackController` coordinates every participant;
+- without video, audio renders its complete controls and wall-clock timeline;
+- with video, the video owns the timeline and audio renders volume controls only;
+- matching DR40 video/audio automatically hands buffered/VOD audio ownership to video;
+- listening starts muted, volume `1`, playing, live, and at rate `1`; and
+- the facade uses the same token, endpoint, network, recovery, and error props for every
+  participant.
+
+Set `talkback={false}` for playback only. Set `disableTalkbackInVod` when operators must
+return to the live edge before speaking.
+
+### `RhombusMediaPlayer` props
+
+| Prop | Type | Default | Purpose |
+| --- | --- | --- | --- |
+| `audioSource` | `RhombusAudioSource` | required | A100 audio gateway or DR40 used for listening and talkback. |
+| `cameraUuid` | `string` | — | Optional synchronized video participant. Omit for audio-only. |
+| `apiOverrideBaseUrl` and shared media props | `RhombusMediaBaseProps` | SDK defaults | Applied consistently to video, audio, and talkback. |
+| `playbackController` | `RhombusPlaybackController` | private controller | Join an existing playback group instead of creating one. |
+| `playbackOptions` | `RhombusPlaybackControllerOptions` | controller defaults | Seed the private controller's mode, time, play state, rate, volume, mute, and timeline behavior. |
+| `talkback` | `boolean` | `true` | Render or omit microphone talkback. |
+| `disableTalkbackInVod` | `boolean` | `false` | Block and immediately stop TX while viewing history. |
+| `videoProps` | `RhombusMediaPlayerVideoProps` | — | Video-specific controls, quality, fit, callbacks, and styling. |
+| `audioProps` | `RhombusMediaPlayerAudioProps` | contextual controls | Audio-specific controls, VOD window, callbacks, and styling. |
+| `talkbackProps` | `RhombusMediaPlayerTalkbackProps` | — | Talkback interaction, microphone, capability, callback, and styling overrides. |
+| `className` / `style` | React root styling | — | Customize the facade root. |
+| `classNames` / `styles` | facade slot maps | — | Customize root, video, audio, and talkback slots. Inline values override defaults. |
+| `onError` / `onRecoveryAttempt` | shared callbacks | — | Receive failures/recovery from every participant. |
+
+The nested prop types intentionally omit participant identity, shared authentication,
+controller-owned playback state, and the shared controller itself. This prevents a nested
+override from silently splitting the group. Use `playbackOptions` to seed internal state:
+
+```tsx
+<RhombusMediaPlayer
+  cameraUuid={cameraUuid}
+  audioSource={audioSource}
+  apiOverrideBaseUrl="/"
+  disableTalkbackInVod
+  playbackOptions={{
+    initialMuted: true,
+    defaultRewindSec: 30,
+  }}
+  videoProps={{
+    videoFit: "contain",
+    timeline: { fetchSeekPoints: true },
+  }}
+  audioProps={{
+    vodWindowSec: 30 * 60,
+  }}
+  talkbackProps={{
+    microphoneGain: 5,
+  }}
+/>;
+```
+
+When `cameraUuid` is present, `audioProps.controls` defaults to `["volume"]`. Pass an
+explicit list to change it. Without a camera, an omitted control list renders the full audio
+toolbar and timeline.
+
+### Styling and imperative access
+
+The facade uses zero-specificity defaults on:
+
+- `.rhombus-media-player`
+- `.rhombus-media-player-video`
+- `.rhombus-media-player-audio`
+- `.rhombus-media-player-talkback`
+
+Normal CSS overrides those classes. `classNames` adds design-system classes, while `styles`
+sets inline styles on the corresponding slots. The root also exposes
+`data-rhombus-media-has-video`, `data-rhombus-media-audio-source`, and
+`data-rhombus-media-talkback` for state-aware selectors:
+
+```tsx
+<RhombusMediaPlayer
+  audioSource={audioSource}
+  className="security-station"
+  classNames={{ talkback: "security-station-microphone" }}
+  styles={{
+    root: { gap: 16 },
+    talkback: { borderColor: "var(--brand-border)" },
+  }}
+/>;
+```
+
+The `RhombusMediaPlayerHandle` exposes the shared `playbackController` plus
+`getVideoPlayer()`, `getAudioPlayer()`, and `getTalkback()`. The getters return each existing
+participant handle or `null` when that participant is disabled:
+
+```tsx
+import { useRef } from "react";
+import {
+  RhombusMediaPlayer,
+  type RhombusMediaPlayerHandle,
+} from "@rhombussystems/react";
+
+const media = useRef<RhombusMediaPlayerHandle>(null);
+
+<RhombusMediaPlayer ref={media} audioSource={audioSource} />;
+
+<button onClick={() => media.current?.playbackController.goLive()}>
+  Go live
+</button>
+```
+
+Use the lower-level components when participants must render in unrelated parts of the DOM,
+when separate controllers are intentional, or when application-specific layout exceeds the
+facade's video → audio → talkback ordering.
 
 ---
 
@@ -740,8 +1024,9 @@ Use it for:
 - a headless audio engine controlled by application UI;
 - one external timeline controlling both a video and audio participant.
 
-This release is **listen-only**. Browser microphone capture, talkback, DSP/equalizer controls,
-and multiple simultaneous audible tracks on one shared controller are outside the 2.1 API.
+Use [`RhombusTalkback`](#rhombustalkback--a100-and-dr40-two-way-audio) alongside this
+component for full two-way audio. DSP/equalizer controls and multiple simultaneous audible
+tracks on one shared controller remain outside the public API.
 
 ### Audio sources and device UUIDs
 
@@ -1083,9 +1368,9 @@ participant must move together.
 ### Shared video/audio playback
 
 `useRhombusPlaybackController()` owns the shared mode, epoch-ms position, play intent,
-playback rate, mute, volume, status, and explicit seek sequence. In 2.1 the supported group is
-one video plus one audio participant. Use separate controllers for independently controlled
-players or multiple audible tracks.
+playback rate, mute, volume, status, and explicit seek sequence. The current controller
+supports one video plus one audio playback participant. Use separate controllers for
+independently controlled players or multiple audible tracks.
 
 Video is the historical clock authority when present; standalone audio is the authority
 otherwise. Explicit seeks, rewinds, and Go Live commands reach every participant. In VOD, a
@@ -1388,7 +1673,441 @@ Browser requirements:
 
 For two independent standalone audio players, omit `playbackController` on both (each creates
 its own controller), or give each a different controller. A single controller is
-intentionally limited to one video and one audio participant in 2.1.
+intentionally limited to one video and one audio playback participant. Talkback coordinates
+through the controller but is not itself a playback clock participant.
+
+---
+
+## `RhombusTalkback` — A100 and DR40 two-way audio
+
+`RhombusTalkback` captures the user's browser microphone and sends it to the live speaker of
+an A100 audio gateway or DR40. It is deliberately separate from `RhombusAudioPlayer`:
+applications may offer speaking without listening, place the microphone control next to
+video, or compose full two-way audio without forcing microphone code or permission prompts
+into listen-only pages.
+
+Talkback always targets the **physical device now**. If the page is showing historical
+footage, starting talkback still speaks through the device's live speaker; it never schedules
+voice at the historical playhead.
+
+The upstream wire path is:
+
+```text
+browser microphone
+  → Web Audio capture/resampling
+  → mono 48 kHz PCM16, exact 20 ms frames
+  → authenticated realtime audio WebSocket
+  → Rhombus server Opus encoding
+  → A100 or DR40 speaker
+```
+
+The SDK requests the microphone only after `startTalking()` is invoked from a user gesture.
+It stops the microphone tracks after talking ends, so an idle component does not leave the
+browser's microphone privacy indicator active.
+
+### Talkback quick starts
+
+**Talk to an A100:**
+
+```tsx
+import { RhombusTalkback } from "@rhombussystems/react";
+
+export function LobbyTalkback() {
+  return (
+    <RhombusTalkback
+      source={{ type: "audio-gateway", uuid: "A100_AUDIO_GATEWAY_UUID" }}
+      apiOverrideBaseUrl="https://your-api.example.com"
+    />
+  );
+}
+```
+
+**Talk to a DR40:**
+
+```tsx
+<RhombusTalkback
+  source={{ type: "dr40", uuid: dr40Uuid }}
+  apiOverrideBaseUrl="/"
+/>
+```
+
+Use the **A100 audio gateway UUID** for `"audio-gateway"` and the **DR40 device UUID** for
+`"dr40"`. The same source rules used by `RhombusAudioPlayer` apply.
+
+**Full two-way A100 audio:**
+
+```tsx
+import {
+  RhombusAudioPlayer,
+  RhombusTalkback,
+  useRhombusPlaybackController,
+} from "@rhombussystems/react";
+
+function TwoWayAudio({ gatewayUuid }: { gatewayUuid: string }) {
+  const playback = useRhombusPlaybackController();
+  const source = {
+    type: "audio-gateway" as const,
+    uuid: gatewayUuid,
+  };
+
+  return (
+    <>
+      <RhombusAudioPlayer
+        source={source}
+        apiOverrideBaseUrl="/"
+        playbackController={playback}
+        controls={["volume"]}
+      />
+      <RhombusTalkback
+        source={source}
+        apiOverrideBaseUrl="/"
+        playbackController={playback}
+      />
+    </>
+  );
+}
+```
+
+The shared controller lets the incoming player suppress Rhombus `far-audio` echo frames while
+that matching talkback participant is transmitting.
+
+**Video, listening, one timeline, and talkback:**
+
+```tsx
+function DoorStation({
+  cameraUuid,
+  audioSource,
+}: {
+  cameraUuid: string;
+  audioSource: RhombusAudioSource;
+}) {
+  const playback = useRhombusPlaybackController();
+
+  return (
+    <>
+      <RhombusPlayer
+        cameraUuid={cameraUuid}
+        apiOverrideBaseUrl="/"
+        playbackController={playback}
+      />
+      <RhombusAudioPlayer
+        source={audioSource}
+        apiOverrideBaseUrl="/"
+        playbackController={playback}
+        controls={["volume"]}
+      />
+      <RhombusTalkback
+        source={audioSource}
+        apiOverrideBaseUrl="/"
+        playbackController={playback}
+        disableTalkbackInVod
+      />
+    </>
+  );
+}
+```
+
+For a DR40 whose video and audio share the same device UUID, pass that UUID to all matching
+DR40 participants. The existing playback ownership rules prevent duplicate incoming audio;
+talkback still uses the realtime audio socket to reach the speaker.
+
+### Automatic click/hold behavior
+
+`interactionMode="auto"` is the default and follows the same effective AEC calculation as
+Rhombus Console:
+
+```ts
+const effectiveAec =
+  !audio_use_external_mic &&
+  !audio_use_external_speaker &&
+  audio_internal_mic_aec_enabled;
+```
+
+- Effective AEC enabled → `"toggle"`: click/tap once to start; click/tap again to stop.
+- Effective AEC disabled → `"hold"`: hold pointer, touch, Space, or Enter; releasing stops.
+
+The capability proxy derives this mode from `/audiogateway/getConfig` or
+`/doorbellcamera/getConfig`. It also accounts for `device_speaker_enabled`, Enterprise
+licensing, API-key role/device access, and device availability.
+
+Override only when a product intentionally wants different interaction:
+
+```tsx
+<RhombusTalkback source={source} interactionMode="hold" apiOverrideBaseUrl="/" />
+```
+
+`state.interactionMode` is always the resolved `"toggle"` or `"hold"` value; it never reports
+`"auto"`.
+
+### Talkback while viewing VOD
+
+By default, talkback remains available while watching history:
+
+```tsx
+<RhombusTalkback
+  source={source}
+  playbackController={playback}
+  disableTalkbackInVod={false}
+/>
+```
+
+This is useful for operators who understand that their voice goes to the live device even
+while the screen shows an earlier time.
+
+For workflows where that could be confusing or unsafe:
+
+```tsx
+<RhombusTalkback
+  source={source}
+  playbackController={playback}
+  disableTalkbackInVod
+/>
+```
+
+When the shared timeline enters VOD, the control becomes disabled. If a user was already
+talking, transmission and browser microphone capture stop immediately. Go Live re-enables
+the control.
+
+Custom video players can provide the same information explicitly:
+
+```tsx
+<RhombusTalkback
+  source={source}
+  viewingMode={showingHistory ? "vod" : "live"}
+  disableTalkbackInVod
+/>
+```
+
+`playbackController` takes precedence over `viewingMode`. Enabling VOD blocking without
+either produces a development warning because the component cannot infer what unrelated
+media UI is displaying.
+
+### Talkback props
+
+`source` and proxy configuration are the normal required inputs:
+
+| Prop | Type | Default | Purpose |
+| --- | --- | --- | --- |
+| `source` | `RhombusAudioSource` | required | A100 or DR40 target. |
+| `apiOverrideBaseUrl` | `string` | required for automatic capability | Application backend hosting token, media, and capability routes. |
+| `connectionMode` | `"wan" \| "lan"` | `"wan"` | Select the reachable realtime audio URI. |
+| `playbackController` | `RhombusPlaybackController` | — | VOD awareness and matching incoming-audio echo suppression. |
+| `viewingMode` | `"live" \| "vod"` | `"live"` | Explicit VOD state when no controller is used. |
+| `disableTalkbackInVod` | `boolean` | `false` | Block/stop talking while viewing history. |
+| `interactionMode` | `"auto" \| "toggle" \| "hold"` | `"auto"` | Follow or override effective device AEC. |
+| `disabled` | `boolean` | `false` | Application-level disable. |
+| `microphoneGain` | `number` | `≈6.62` | Console-matched linear browser-microphone gain before PCM16 clipping. |
+| `microphoneConstraints` | `MediaTrackConstraints` | mono/48 kHz/AEC | Override browser capture device and processing constraints. |
+| `capability` | `RhombusTalkbackCapability` | fetched from proxy | Advanced server-resolved capability injection. |
+| `className` / `style` | root styling | — | Styles the component wrapper. |
+| `classNames` | `RhombusTalkbackClassNames` | — | Adds classes to default-control slots. |
+| `styles` | `RhombusTalkbackStyles` | — | Inline slot styling, merged last. |
+| `renderControl` | `(api, state) => ReactNode` | default microphone | Fully replace the UI while keeping the engine. |
+| `onReady` | `() => void` | — | Capability, token, and realtime URI are ready. |
+| `onTalkingChange` | `(boolean) => void` | — | Actual socket transmission starts/stops. |
+| `onPermissionChange` | `(permission) => void` | — | Browser microphone permission becomes known. |
+| `onStateChange` | `(state) => void` | — | Any observable talkback state changes. |
+| `onRecoveryAttempt` | `(attempt, error) => void` | — | An interrupted talk socket schedules a retry. |
+| `onError` | `(error) => void` | — | Capability, permission, media, or transport failure. |
+
+`microphoneConstraints` are merged after the defaults, so applications can select a specific
+`deviceId` or turn browser processing off. The SDK always converts the resulting Web Audio
+stream to the Rhombus-required mono 48 kHz PCM16 format.
+
+### Talkback custom controls and styling
+
+The default control uses stable, zero-specificity CSS classes:
+
+- `.rhombus-microphone-control`
+- `.rhombus-microphone-button`
+- `.rhombus-microphone-icon`
+- `.rhombus-microphone-content`
+- `.rhombus-microphone-label`
+- `.rhombus-microphone-status`
+
+Normal application CSS wins without `!important`:
+
+```css
+.rhombus-microphone-button {
+  width: 64px;
+  height: 64px;
+  background: var(--brand-action);
+}
+
+.rhombus-microphone-button[data-state="talking"] {
+  background: var(--brand-danger);
+}
+```
+
+Use `classNames` for CSS modules, Tailwind, or a design system. Use `styles` for inline
+prop-based styling; those values are placed directly on each slot and override stylesheet
+rules:
+
+```tsx
+<RhombusTalkback
+  source={source}
+  apiOverrideBaseUrl="/"
+  classNames={{ root: styles.root, label: styles.label }}
+  styles={{
+    button: { width: 56, height: 56, borderRadius: 12 },
+    status: { color: "#7dd3fc" },
+  }}
+/>
+```
+
+Replace the UI entirely:
+
+```tsx
+<RhombusTalkback
+  ref={talkbackRef}
+  source={source}
+  apiOverrideBaseUrl="/"
+  renderControl={(api, state) => (
+    <button
+      disabled={!state.canTalk}
+      onClick={() => void api.toggleTalking()}
+    >
+      {state.talking ? "Stop speaking" : "Speak"}
+    </button>
+  )}
+/>
+```
+
+For a detached reusable control, export state from `onStateChange` and render
+`RhombusMicrophoneControl` with the imperative API and state. Its
+`RhombusMicrophoneControlProps` type is exported:
+
+```tsx
+import { useState } from "react";
+import {
+  RhombusMicrophoneControl,
+  RhombusTalkback,
+  type RhombusAudioSource,
+  type RhombusTalkbackHandle,
+  type RhombusTalkbackState,
+} from "@rhombussystems/react";
+
+function DetachedTalkControl({ source }: { source: RhombusAudioSource }) {
+  const [api, setApi] = useState<RhombusTalkbackHandle | null>(null);
+  const [state, setState] = useState<RhombusTalkbackState | null>(null);
+
+  return (
+    <>
+      <RhombusTalkback
+        ref={setApi}
+        source={source}
+        apiOverrideBaseUrl="/"
+        renderControl={() => null}
+        onStateChange={setState}
+      />
+
+      {api && state ? (
+        <RhombusMicrophoneControl
+          api={api}
+          state={state}
+          classNames={{ root: "toolbar-microphone" }}
+          styles={{ button: { width: 56, height: 56 } }}
+          buttonProps={{ "aria-describedby": "talkback-help" }}
+        />
+      ) : null}
+      <span id="talkback-help">Voice is sent to the live device.</span>
+    </>
+  );
+}
+```
+
+`buttonProps` accepts ordinary native button attributes except the interaction, disabled,
+class, and style fields owned by the control. Use `classNames` and `styles` for those visual
+fields; inline `styles` are merged last.
+
+The imperative handle contains:
+
+| Method | Behavior |
+| --- | --- |
+| `startTalking()` | Request/open microphone and begin transmission. Call from a user gesture. |
+| `stopTalking()` | Immediately close TX, stop capture tracks, and clear buffered frames. |
+| `toggleTalking()` | Start or stop; convenient for custom click-to-talk controls. |
+| `requestMicrophonePermission()` | Prompt without starting transmission, then release the track. |
+| `getState()` | Return the latest `RhombusTalkbackState`. |
+
+### Talkback state, callbacks, permissions, and safety
+
+`RhombusTalkbackState` includes:
+
+```ts
+type RhombusTalkbackState = {
+  source: RhombusAudioSource;
+  status:
+    | "loading-capability"
+    | "ready"
+    | "requesting-permission"
+    | "connecting"
+    | "talking"
+    | "reconnecting"
+    | "blocked"
+    | "error";
+  talking: boolean;
+  interactionMode: "toggle" | "hold";
+  canTalk: boolean;
+  blockedReason:
+    | "disabled"
+    | "vod"
+    | "not-authorized"
+    | "license-required"
+    | "speaker-disabled"
+    | "device-unavailable"
+    | "capability-unavailable"
+    | null;
+  microphonePermission: "unknown" | "prompt" | "granted" | "denied";
+  viewingMode: "live" | "vod";
+  capability: RhombusTalkbackCapability | null;
+};
+```
+
+For privacy and stuck-microphone prevention, active talking stops on pointer/keyboard release,
+pointer cancellation, pointer leave, control blur, window blur, a hidden tab, unmount, source
+change, application disable, capability loss, and a blocked VOD transition. An asynchronous
+permission or socket operation is generation-checked, so releasing before connection finishes
+cannot start transmission later.
+
+Unexpected socket closes retry with the normal exponential backoff. The 16-byte Rhombus
+`ctrl`/play-ASAP prefix is resent before the first exact 1,920-byte PCM frame on every new
+socket. Pending capture is bounded to roughly 200 ms so reconnects cannot replay a long,
+stale microphone backlog.
+
+### Talkback authentication and capability policy
+
+Talkback uses the same federated token and realtime audio URI contract as live listening, but
+automatic capability resolution intentionally requires an **application-owned proxy**:
+
+```tsx
+<RhombusTalkback
+  source={source}
+  apiOverrideBaseUrl="https://your-api.example.com"
+  paths={{
+    federatedToken: "/media/federated-token",
+    audioMediaUris: "/media/audio-uris",
+    audioTalkbackCapabilities: "/media/audio-talkback-capabilities",
+  }}
+/>
+```
+
+The capability response must already reflect:
+
+- whether the API key's assigned role can access the requested device;
+- an Enterprise license assigned to that A100/DR40;
+- `device_speaker_enabled`;
+- device connectivity/availability;
+- effective AEC and therefore toggle versus hold behavior.
+
+The SDK treats that response as the product-policy input and never attempts to infer role or
+license inventory in the browser. Client-side disabling is user experience, not a substitute
+for server authorization: the realtime service must enforce the federated principal's device
+scope for the WebSocket itself.
+
+Supplying `capability` is useful when a parent already fetched the same normalized server
+answer. Do not create an optimistic `{ canTalk: true }` object in browser code; doing so
+bypasses the intended product UI gate and can drift from Console behavior.
 
 ---
 
@@ -1412,9 +2131,9 @@ composing your own layout.
 ### Shared base props (all players)
 
 These come from `RhombusMediaBaseProps` and are accepted by video players, the audio player,
-and `Timeline`. `RhombusPlayerBaseProps` extends this type with the `cameraUuid` required by
-video players. Audio uses `source`; `Timeline` needs `cameraUuid` only when it fetches
-camera-specific data.
+talkback, and `Timeline`. `RhombusPlayerBaseProps` extends this type with the `cameraUuid`
+required by video players. Audio/talkback use `source`; `Timeline` needs `cameraUuid` only
+when it fetches camera-specific data.
 
 
 | Prop                    | Type                                                  | Default                               | Notes                                                                                                                                                  |
@@ -1718,14 +2437,15 @@ any server hint in the response (`expiresInSec`, `expiresAtMs`, or `expiresAt`).
 - **Video DASH / buffered:** keeps playing across refreshes (requests read the latest token).
 - **Realtime video:** reconnects the socket on each refresh (short blip).
 - **Live audio:** re-resolves media URIs and reconnects with the new token.
+- **Talkback:** an active microphone session reconnects and resends its control prefix.
 - **Historical audio:** Dash.js and decoded segment requests read the latest token; outstanding
   decoded work is invalidated during rotation.
 
 ### You-managed
 
 Pass `federatedSessionToken`. The SDK never calls your token endpoint. Rotate by passing a new
-string. Video DASH reads it without a teardown; realtime video and live audio reconnect;
-historical audio uses it for subsequent requests.
+string. Video DASH reads it without a teardown; realtime video, live audio, and active
+talkback reconnect; historical audio uses it for subsequent requests.
 
 ### Two transport topologies
 
@@ -1735,6 +2455,7 @@ historical audio uses it for subsequent requests.
 | Token request     | `window.location.origin` + `paths.federatedToken`                                                          | `apiOverrideBaseUrl` + `paths.federatedToken`                                |
 | Video media URIs  | **Direct to Rhombus** `api2.rhombussystems.com` + `paths.mediaUris`                                       | `apiOverrideBaseUrl` + `paths.mediaUris`                                     |
 | Audio media URIs  | **Direct to Rhombus** + `paths.audioGatewayMediaUris` or `paths.dr40MediaUris`                             | `apiOverrideBaseUrl` + `paths.audioMediaUris`                                |
+| Talkback capability | Supply a trusted, server-resolved `capability` only                                                     | `apiOverrideBaseUrl` + `paths.audioTalkbackCapabilities`                     |
 | Requirement       | Token minted with a Rhombus **`domain`** allowing this origin, or the browser call is blocked (CORS / 401) | Your backend proxies `getMediaUris`; browser never talks to Rhombus directly |
 
 
@@ -1804,6 +2525,10 @@ screen until refresh"), or on a server `reconnect` message.
 `reconnect` message. A server reconnect also re-resolves the A100/DR40 media URIs. Historical
 Dash.js initialization failure falls back to decoded Opus; historical fetch/decoder errors
 surface through `onError`.
+
+**Talkback (WebSocket)** reconnects only while the user still has active talk intent. Capture
+frames waiting for the socket are bounded, and every new socket receives a fresh play-ASAP
+control prefix before PCM. Releasing the control cancels pending recovery immediately.
 
 ```tsx
 function CameraWithStatus({ cameraUuid }: { cameraUuid: string }) {
@@ -1909,6 +2634,98 @@ Preserve upstream non-2xx status codes in your wrapper. Do not transform or rena
 `wanLiveOpusUri`, `lanLiveOpusUris`, `wanVodMpdUriTemplate`, or
 `lanVodMpdUrisTemplates`.
 
+### Audio talkback capability endpoint
+
+`RhombusTalkback` posts `{ source }` to `paths.audioTalkbackCapabilities` (default
+`/api/audio-talkback-capabilities`). This route is deliberately normalized rather than a raw
+Rhombus pass-through because it is the application backend's job to combine API-key RBAC,
+license, device configuration, and connectivity:
+
+```ts
+type RhombusTalkbackCapability = {
+  canTalk: boolean;
+  interactionMode: "toggle" | "hold";
+  authorized: boolean;
+  licensed: boolean;
+  speakerEnabled: boolean;
+  connected?: boolean;
+  reason?:
+    | "not-authorized"
+    | "license-required"
+    | "speaker-disabled"
+    | "device-unavailable"
+    | "capability-unavailable";
+};
+```
+
+For the selected source, use the server-side API key to:
+
+1. Verify the device is returned by the accessible A100/DR40 inventory for that API key's
+   assigned role. Any device permission accepted by Console—ADMIN, READONLY, or LIVEONLY—is
+   sufficient to talk; ADMIN is required only to change audio settings.
+2. Fetch `/audiogateway/getConfig` with `{ audioGatewayUuid }` or
+   `/doorbellcamera/getConfig` with `{ deviceUuid }`.
+3. Fetch `/license/getDeviceLicenses` and require the matching device's `licenseType` to be
+   `"ENTERPRISE"`.
+4. Require `config.device_speaker_enabled === true` and current device availability.
+5. Return `"toggle"` only when the internal microphone and speaker are selected and
+   `audio_internal_mic_aec_enabled` is true; otherwise return `"hold"`.
+
+Return a non-revealing `not-authorized` answer for an inaccessible/unknown UUID rather than
+leaking cross-organization device existence. Set `Cache-Control: no-store`: role, license,
+speaker, and connectivity state can change. Return `capability-unavailable` for transient
+configuration, inventory, or license-service failures instead of misreporting them as a
+policy denial.
+
+Conceptually:
+
+```js
+app.post("/api/audio-talkback-capabilities", async (req, res) => {
+  const { type, uuid } = req.body.source;
+  const isGateway = type === "audio-gateway";
+
+  // All calls use the server-side API key whose assigned role defines access.
+  const [config, licenses, accessibleDevices] = await Promise.all([
+    rhombusPost(
+      isGateway ? "/audiogateway/getConfig" : "/doorbellcamera/getConfig",
+      isGateway ? { audioGatewayUuid: uuid } : { deviceUuid: uuid }
+    ),
+    rhombusPost("/license/getDeviceLicenses", {}),
+    listAccessibleAudioDevices(type),
+  ]);
+
+  const authorized = accessibleDevices.some(device => device.uuid === uuid);
+  const licensed = licenses.deviceLicenses?.some(
+    license => license.deviceUuid === uuid && license.licenseType === "ENTERPRISE"
+  ) ?? false;
+  const speakerEnabled = authorized && config.config?.device_speaker_enabled === true;
+  const connected = authorized && getDeviceConnected(accessibleDevices, uuid);
+  const effectiveAec =
+    config.config?.audio_internal_mic_aec_enabled === true &&
+    config.config?.audio_use_external_mic !== true &&
+    config.config?.audio_use_external_speaker !== true;
+  const canTalk = authorized && licensed && speakerEnabled && connected;
+
+  res.set("Cache-Control", "no-store").json({
+    canTalk,
+    interactionMode: effectiveAec ? "toggle" : "hold",
+    authorized,
+    licensed,
+    speakerEnabled,
+    connected,
+    ...(!authorized ? { reason: "not-authorized" }
+      : !licensed ? { reason: "license-required" }
+      : !speakerEnabled ? { reason: "speaker-disabled" }
+      : !connected ? { reason: "device-unavailable" }
+      : {}),
+  });
+});
+```
+
+The capability route controls the SDK UI, but it cannot secure a WebSocket by itself. Ensure
+the realtime audio handshake also validates the federated token's permission group against
+the requested device before accepting inbound PCM.
+
 ### Footage seekpoints (Timeline, optional)
 
 When `Timeline`/`RhombusPlayer` fetches seekpoints, it `POST`s `paths.footageSeekpoints`
@@ -1950,14 +2767,23 @@ streams the file back.
 
 **Components**
 
+- `RhombusMediaPlayer` — complete video, A100/DR40 audio, shared timeline, and talkback facade.
 - `RhombusPlayer` — unified live/VOD player with controls.
 - `RhombusAudioPlayer` — unified A100/DR40 live and historical audio.
 - `RhombusAudioPlayerControls` — reusable audio control bar.
+- `RhombusTalkback` — A100/DR40 browser-microphone talkback engine and default control.
+- `RhombusMicrophoneControl` — reusable default talkback control for detached/custom layouts.
 - `RhombusBufferedPlayer` — DASH live & VOD.
 - `RhombusRealtimePlayer` — realtime H.264 live.
 - `RhombusPlayerControls` — the default control bar (exported for advanced composition).
 - `RhombusDateTimePicker` — standalone date/time jump picker (footage-aware disabled days).
 - `Timeline` — standalone canvas scrubber.
+
+**Hooks**
+
+- `useRhombusPlaybackController` — create the shared epoch-ms playback state and commands
+  used to synchronize one video participant, one audio participant, an optional timeline,
+  and matching talkback policy/echo coordination.
 
 **Constants** (value **and** type — usable as named members or plain strings)
 
@@ -1973,6 +2799,15 @@ streams the file back.
 `RhombusAudioPlayerControlsProps`, `RhombusAudioSource`, `RhombusAudioTransport`,
 `RhombusPlaybackController`, `RhombusPlaybackControllerOptions`,
 `RhombusPlaybackControllerState`, `RhombusMediaBaseProps`.
+- Talkback: `RhombusTalkbackProps`, `RhombusTalkbackHandle`, `RhombusTalkbackState`,
+`RhombusTalkbackStatus`, `RhombusTalkbackCapability`, `RhombusTalkbackInteractionMode`,
+`RhombusResolvedTalkbackInteractionMode`, `RhombusTalkbackBlockedReason`,
+`RhombusTalkbackClassNames`, `RhombusTalkbackStyles`, `RhombusMicrophonePermission`,
+`RhombusMicrophoneControlProps`.
+- Complete media facade: `RhombusMediaPlayerProps`, `RhombusMediaPlayerHandle`,
+`RhombusMediaPlayerClassNames`, `RhombusMediaPlayerStyles`,
+`RhombusMediaPlayerVideoProps`, `RhombusMediaPlayerAudioProps`,
+`RhombusMediaPlayerTalkbackProps`.
 - Handles: `RhombusPlayerHandle`, `RhombusBufferedPlayerHandle`, `RhombusRealtimePlayerHandle`,
 `TimelineHandle`.
 - Unified player: `RhombusPlayerState`, `RhombusPlayerMode`,
@@ -2014,6 +2849,10 @@ MSE (Dash.js). Broadest support.
 - `RhombusAudioPlayer`: live audio and decoded VOD require Web Audio, WebAssembly, and Web
 Workers. Historical playback prefers Opus/WebM MSE and automatically falls back to decoded
 Rhombus Opus segments on Safari/iOS and other browsers without that MSE combination.
+- `RhombusTalkback`: requires a secure context (HTTPS or localhost), `getUserMedia`, Web
+Audio, and WebSockets. It prefers `AudioWorklet` and falls back to `ScriptProcessorNode` when
+the worklet is unavailable or blocked by CSP. The browser may show a microphone permission
+prompt on the first user gesture.
 
 Audio starts muted. Call `play()`, `goLive()`, or `setMuted(false)` from the user's actual
 click/tap handler; forwarding the action through a shared playback controller preserves that
@@ -2029,6 +2868,45 @@ return supportsRealtime
   : <RhombusBufferedPlayer cameraUuid={id} />;
 ```
 
+### Production browser and security-policy checklist
+
+Audio playback and talkback span fetch, media, worker, WebSocket, and microphone browser
+subsystems. A restrictive deployment policy should explicitly allow:
+
+- `connect-src` to your application API and the exact HTTPS/WSS media hosts returned by
+  Rhombus media-URI resolution;
+- `media-src` to the DASH manifest/segment hosts used by video and historical audio;
+- `worker-src blob:` for the worker-backed Opus decoder;
+- microphone access in the page's `Permissions-Policy` and, when embedded, the iframe's
+  `allow="microphone"` attribute; and
+- HTTPS for every non-localhost deployment.
+
+The talkback capture path creates an AudioWorklet module from a short-lived blob URL. When a
+policy or browser blocks that worklet, the SDK falls back to `ScriptProcessorNode`; the Opus
+playback decoder still requires blob workers. Prefer adding the narrow directives above over
+loosening the entire CSP, and test the final production policy in every supported browser.
+
+Do not request microphone access during page load. `RhombusTalkback` intentionally waits for
+`startTalking()`, `toggleTalking()`, or `requestMicrophonePermission()` from a user gesture
+and releases capture tracks when the action ends.
+
+For Next.js or another SSR framework, place SDK imports in a client-only media module and
+disable server rendering for the component that imports it. For example:
+
+```tsx
+"use client";
+
+import dynamic from "next/dynamic";
+
+const AudioStation = dynamic(
+  () => import("./AudioStation.client").then(module => module.AudioStation),
+  { ssr: false }
+);
+```
+
+`AudioStation.client.tsx` can then import `@rhombussystems/react` normally. Do not use
+unexported deep import paths to work around SSR; they are not part of the package contract.
+
 ---
 
 ## Troubleshooting
@@ -2042,6 +2920,7 @@ return supportsRealtime
 | **Clip download 404**                                | The `/api/clip-download` route can't resolve the media host/region. Verify the route streams `/media/metadata/{region}/{uuid}.mp4` with the API key. |
 | **Realtime shows black, then recovers**              | Normal stall-watchdog reconnect. Tune `stallTimeoutMs`; surface `onRecoveryAttempt`.                                                                 |
 | **Realtime never renders, no errors**                | Browser lacks WebCodecs H.264 (e.g. Firefox). Use buffered, or let `RhombusPlayer` fall back.                                                        |
+| **`self`, `window`, or `document` is undefined during SSR** | The package is browser-only because Dash.js evaluates browser globals. Load the importing component client-side with SSR disabled. |
 | **LAN won't connect**                                | Browser can't reach the device host, or mixed content (HTTPS page → HTTP device). Check routing/firewall and protocol.                               |
 | **VOD / timeline empty for a range**                 | No recorded footage for that window. Pick a range when the camera was recording.                                                                     |
 | **404 on `/api/presence-windows`**                   | Availability route not implemented / wrong path. Implement it (forward `/camera/getPresenceWindows`) or set `paths.presenceWindows`. Harmless otherwise: gap rendering stays off and the clip pre-check fails open. |
@@ -2052,7 +2931,42 @@ return supportsRealtime
 | **Audio remains Connecting**                         | Check the live WebSocket in DevTools, federated query parameters, CSP `connect-src`, proxy response, and whether the browser can reach the selected WAN/LAN host. |
 | **Historical audio fails only on Safari/iOS**        | The decoded fallback must fetch WASM and Rhombus Opus segments. Allow worker/WASM assets and segment hosts in CSP/CORS, and confirm token query parameters reach each segment request. |
 | **Duplicate or echoing DR40 audio**                  | Pair `RhombusPlayer` and `RhombusAudioPlayer` with the same DR40 UUID and the same controller. Matching buffered/VOD video then owns embedded audio automatically. |
+| **404 on `/api/audio-talkback-capabilities`**        | This is an application-owned proxy route, not a browser-callable Rhombus endpoint. Implement it, verify `apiOverrideBaseUrl`/`paths.audioTalkbackCapabilities`, and restart any long-running backend process after deploying the route. |
+| **Talkback says Role lacks device access**           | The API key behind the capability proxy cannot access this device through its assigned permission group, or the UUID is wrong. Use the same role/device scope expected in Console. |
+| **Talkback says Enterprise license required**        | Assign an Enterprise device license to the selected A100/DR40. The proxy must check `/license/getDeviceLicenses`. |
+| **Talkback says Device speaker disabled**            | Enable the speaker in the device's Audio Controls using an ADMIN role. Refresh/re-resolve capability afterward. |
+| **Microphone permission denied**                     | Serve the app over HTTPS (or localhost), allow microphone access in browser/OS settings, and call `startTalking()` or `requestMicrophonePermission()` directly from a user gesture. |
+| **Talk button connects but the device is silent**    | Verify the selected UUID/type, WAN/LAN reachability, capability response, realtime WebSocket frames, and that every new socket sends `ctrl` before exact 1,920-byte PCM frames. |
+| **User hears their own talkback**                    | Give `RhombusAudioPlayer` and `RhombusTalkback` the same source and playback controller so incoming far-audio echo frames are suppressed during TX. |
+| **Talk remains available in history**                | This is the documented default. Set `disableTalkbackInVod` and provide `playbackController` or `viewingMode` to block it. |
 
+
+---
+
+## Migrating from 2.1 → 2.2
+
+2.2 is non-breaking. Existing video and listen-only audio code needs no changes.
+
+The additive talkback surface includes:
+
+- `RhombusMediaPlayer`, the optional high-level video/audio/talkback facade;
+- `RhombusTalkback` and `RhombusMicrophoneControl`;
+- talkback state, handle, capability, mode, permission, class-name, and style types;
+- `RhombusPlayerPaths.audioTalkbackCapabilities`;
+- shared-controller far-audio suppression while matching talkback is active.
+
+To enable talkback:
+
+1. Add the application-owned
+   [`/api/audio-talkback-capabilities`](#audio-talkback-capability-endpoint) route.
+2. Make that route enforce the API key role's device scope and normalize Enterprise
+   licensing, speaker configuration, connectivity, and effective AEC.
+3. Ensure the realtime audio service validates the federated principal's device access for
+   inbound talkback.
+4. Render `RhombusTalkback` with the same source/controller as the associated audio player.
+
+The default remains permissive while viewing VOD. Set `disableTalkbackInVod` for products
+that require a live visual/audio context before an operator may speak.
 
 ---
 

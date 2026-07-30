@@ -37,6 +37,12 @@ export type RhombusPlayerPaths = {
   /** Direct Rhombus path for DR40 media URIs. Default `/doorbellcamera/getMediaUris`. */
   dr40MediaUris?: string;
   /**
+   * POST path for the application-owned talkback capability proxy. Default
+   * `/api/audio-talkback-capabilities`; request body `{ source }`. The proxy must
+   * enforce the API key's RBAC scope and normalize license/device configuration.
+   */
+  audioTalkbackCapabilities?: string;
+  /**
    * POST path for footage seekpoints (`/camera/getFootageSeekpointsV2`). Used by {@link Timeline} when
    * `fetchSeekPoints` is enabled. In proxy mode resolved against `apiOverrideBaseUrl` (default
    * `/api/footage-seekpoints`); in direct Rhombus mode resolved against `rhombusApiBaseUrl`
@@ -878,4 +884,249 @@ export type RhombusAudioPlayerProps = RhombusMediaBaseProps & {
   onVolumeChange?: (volume: number) => void;
   onStatusChange?: (status: RhombusPlaybackControllerState["status"]) => void;
   onStateChange?: (state: RhombusAudioPlayerState) => void;
+};
+
+/* ------------------------------------------------------------------------------------------ *
+ * A100 / DR40 talkback (`RhombusTalkback`)
+ * ------------------------------------------------------------------------------------------ */
+
+/** Requested microphone interaction. `auto` follows the device's effective AEC configuration. */
+export type RhombusTalkbackInteractionMode = "auto" | "toggle" | "hold";
+
+/** Interaction mode after resolving the device configuration. */
+export type RhombusResolvedTalkbackInteractionMode = "toggle" | "hold";
+
+/** Why talkback is currently unavailable. */
+export type RhombusTalkbackBlockedReason =
+  | "disabled"
+  | "vod"
+  | "not-authorized"
+  | "license-required"
+  | "speaker-disabled"
+  | "device-unavailable"
+  | "capability-unavailable";
+
+/** Normalized, server-authoritative response from the talkback capability proxy. */
+export type RhombusTalkbackCapability = {
+  canTalk: boolean;
+  interactionMode: RhombusResolvedTalkbackInteractionMode;
+  authorized: boolean;
+  licensed: boolean;
+  speakerEnabled: boolean;
+  /** `undefined` when the proxy cannot determine current connectivity. */
+  connected?: boolean;
+  reason?: Exclude<RhombusTalkbackBlockedReason, "disabled" | "vod">;
+};
+
+/** Talkback lifecycle state. */
+export type RhombusTalkbackStatus =
+  | "loading-capability"
+  | "ready"
+  | "requesting-permission"
+  | "connecting"
+  | "talking"
+  | "reconnecting"
+  | "blocked"
+  | "error";
+
+/** Browser microphone permission as far as it is known to the component. */
+export type RhombusMicrophonePermission = "unknown" | "prompt" | "granted" | "denied";
+
+/** Observable state passed to custom talkback controls and exposed by the imperative handle. */
+export type RhombusTalkbackState = {
+  source: RhombusAudioSource;
+  status: RhombusTalkbackStatus;
+  talking: boolean;
+  interactionMode: RhombusResolvedTalkbackInteractionMode;
+  canTalk: boolean;
+  blockedReason: RhombusTalkbackBlockedReason | null;
+  microphonePermission: RhombusMicrophonePermission;
+  viewingMode: RhombusPlayerMode;
+  capability: RhombusTalkbackCapability | null;
+};
+
+/** Per-slot class names for the default microphone control. */
+export type RhombusTalkbackClassNames = {
+  root?: string;
+  button?: string;
+  icon?: string;
+  content?: string;
+  label?: string;
+  status?: string;
+};
+
+/** Inline per-slot styles. Inline values intentionally override the default and consumer CSS. */
+export type RhombusTalkbackStyles = {
+  root?: CSSProperties;
+  button?: CSSProperties;
+  icon?: CSSProperties;
+  content?: CSSProperties;
+  label?: CSSProperties;
+  status?: CSSProperties;
+};
+
+/** Imperative API exposed by {@link RhombusTalkback}. */
+export type RhombusTalkbackHandle = {
+  startTalking: () => Promise<void>;
+  stopTalking: () => void;
+  toggleTalking: () => Promise<void>;
+  requestMicrophonePermission: () => Promise<void>;
+  getState: () => RhombusTalkbackState;
+};
+
+/** Props for A100 and DR40 browser-microphone talkback. */
+export type RhombusTalkbackProps = RhombusMediaBaseProps & {
+  source: RhombusAudioSource;
+  /** Coordinates VOD policy and echo suppression with audio/video participants. */
+  playbackController?: RhombusPlaybackController;
+  /**
+   * Explicit viewing mode for custom media integrations. A supplied playback controller
+   * takes precedence and produces a development warning when both are present.
+   */
+  viewingMode?: RhombusPlayerMode;
+  /**
+   * When true, the microphone is disabled in VOD and an active transmission is stopped
+   * immediately when the shared controller seeks into history. Default `false`.
+   */
+  disableTalkbackInVod?: boolean;
+  /** `auto` follows effective device AEC; explicit values override it. Default `auto`. */
+  interactionMode?: RhombusTalkbackInteractionMode;
+  /** Disable talkback independent of device capability. */
+  disabled?: boolean;
+  /** Browser microphone gain before PCM16 conversion. Default `6.623413251903491` (Console parity). */
+  microphoneGain?: number;
+  /** Overrides merged into the SDK's mono, interactive microphone constraints. */
+  microphoneConstraints?: MediaTrackConstraints;
+  /**
+   * Pre-resolved capability for advanced integrations. Normally omit this and implement
+   * the application-owned `paths.audioTalkbackCapabilities` proxy route.
+   */
+  capability?: RhombusTalkbackCapability;
+  classNames?: RhombusTalkbackClassNames;
+  styles?: RhombusTalkbackStyles;
+  renderControl?: (api: RhombusTalkbackHandle, state: RhombusTalkbackState) => ReactNode;
+  onReady?: () => void;
+  onTalkingChange?: (talking: boolean) => void;
+  onPermissionChange?: (permission: RhombusMicrophonePermission) => void;
+  onStateChange?: (state: RhombusTalkbackState) => void;
+};
+
+/* ------------------------------------------------------------------------------------------ *
+ * Complete media composition (`RhombusMediaPlayer`)
+ * ------------------------------------------------------------------------------------------ */
+
+/** Class-name slots owned by {@link RhombusMediaPlayer}. */
+export type RhombusMediaPlayerClassNames = {
+  root?: string;
+  video?: string;
+  audio?: string;
+  talkback?: string;
+};
+
+/** Inline slot styles owned by {@link RhombusMediaPlayer}. */
+export type RhombusMediaPlayerStyles = {
+  root?: CSSProperties;
+  video?: CSSProperties;
+  audio?: CSSProperties;
+  talkback?: CSSProperties;
+};
+
+type RhombusMediaPlayerOwnedBaseProp =
+  Exclude<keyof RhombusMediaBaseProps, "className" | "style"> |
+  "playbackController";
+
+type RhombusMediaPlayerOwnedPlaybackProp =
+  | "playing"
+  | "positionMs"
+  | "playbackRate"
+  | "initialMode"
+  | "initialStartTimeMs"
+  | "defaultRewindSec"
+  | "liveEdgeToleranceSec"
+  | "autoGoLiveAtEdge";
+
+/**
+ * Video-specific overrides for {@link RhombusMediaPlayer}. Shared auth, recovery,
+ * identity, and controller props remain owned by the facade.
+ */
+export type RhombusMediaPlayerVideoProps = Omit<
+  RhombusPlayerProps,
+  | RhombusMediaPlayerOwnedBaseProp
+  | RhombusMediaPlayerOwnedPlaybackProp
+  | "cameraUuid"
+>;
+
+/**
+ * Audio-specific overrides for {@link RhombusMediaPlayer}. Shared auth, recovery,
+ * source, controller, and controller-owned state remain owned by the facade.
+ */
+export type RhombusMediaPlayerAudioProps = Omit<
+  RhombusAudioPlayerProps,
+  | RhombusMediaPlayerOwnedBaseProp
+  | RhombusMediaPlayerOwnedPlaybackProp
+  | "source"
+  | "muted"
+  | "volume"
+>;
+
+/**
+ * Talkback-specific overrides for {@link RhombusMediaPlayer}. Shared auth, source,
+ * controller, viewing mode, and VOD policy remain owned by the facade.
+ */
+export type RhombusMediaPlayerTalkbackProps = Omit<
+  RhombusTalkbackProps,
+  | RhombusMediaPlayerOwnedBaseProp
+  | "source"
+  | "viewingMode"
+  | "disableTalkbackInVod"
+>;
+
+/** Imperative access to the participants composed by {@link RhombusMediaPlayer}. */
+export type RhombusMediaPlayerHandle = {
+  playbackController: RhombusPlaybackController;
+  getVideoPlayer: () => RhombusPlayerHandle | null;
+  getAudioPlayer: () => RhombusAudioPlayerHandle | null;
+  getTalkback: () => RhombusTalkbackHandle | null;
+};
+
+/**
+ * Props for the high-level video, A100/DR40 audio, and talkback facade.
+ *
+ * `audioSource` is intentionally explicit: `cameraUuid` identifies the optional
+ * video participant, while `audioSource` always identifies the listening and
+ * talkback device.
+ */
+export type RhombusMediaPlayerProps = Omit<
+  RhombusMediaBaseProps,
+  "className" | "style"
+> & {
+  /** A100 audio gateway or DR40 used for listening and talkback. */
+  audioSource: RhombusAudioSource;
+  /** Optional camera. Omit it for a standalone audio/talkback page. */
+  cameraUuid?: string;
+  /**
+   * Optional external controller. When omitted, the facade creates and owns one
+   * controller shared by every rendered participant.
+   */
+  playbackController?: RhombusPlaybackController;
+  /** Seeds the facade-owned controller. Ignored when `playbackController` is supplied. */
+  playbackOptions?: RhombusPlaybackControllerOptions;
+  /** Render browser-microphone talkback. Default `true`. */
+  talkback?: boolean;
+  /**
+   * Block and immediately stop talkback while the shared controller is in VOD.
+   * Default `false`, so talkback continues to target the live physical device.
+   */
+  disableTalkbackInVod?: boolean;
+  /** Video-only overrides. Ignored when `cameraUuid` is omitted. */
+  videoProps?: RhombusMediaPlayerVideoProps;
+  /** Audio-only overrides. With video, controls default to volume only. */
+  audioProps?: RhombusMediaPlayerAudioProps;
+  /** Talkback-only overrides. Ignored when `talkback` is `false`. */
+  talkbackProps?: RhombusMediaPlayerTalkbackProps;
+  className?: string;
+  style?: CSSProperties;
+  classNames?: RhombusMediaPlayerClassNames;
+  /** Inline slot styles; root `style` is applied after `styles.root`. */
+  styles?: RhombusMediaPlayerStyles;
 };

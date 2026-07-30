@@ -35,6 +35,16 @@ type PlaybackControllerInternals = {
   subscribePlaybackActivation: (
     listener: (action: "play" | "unmute") => void
   ) => () => void;
+  registerTalkback: (
+    id: string,
+    source: RhombusAudioSource
+  ) => () => void;
+  updateTalkback: (
+    id: string,
+    source: RhombusAudioSource,
+    talking: boolean
+  ) => void;
+  isTalkbackActive: (source: RhombusAudioSource) => boolean;
 };
 
 const controllerInternals = new WeakMap<RhombusPlaybackController, PlaybackControllerInternals>();
@@ -170,6 +180,9 @@ export function useRhombusPlaybackController(
     new Map<string, RhombusPlaybackControllerState["status"]>()
   );
   const listenersRef = useRef(new Set<() => void>());
+  const talkbackRef = useRef(
+    new Map<string, { source: RhombusAudioSource; talking: boolean }>()
+  );
   const notifyParticipants = useCallback(() => {
     for (const listener of listenersRef.current) listener();
   }, []);
@@ -268,6 +281,24 @@ export function useRhombusPlaybackController(
       subscribePlaybackActivation(listener) {
         playbackActivationListenersRef.current.add(listener);
         return () => playbackActivationListenersRef.current.delete(listener);
+      },
+      registerTalkback(id, source) {
+        talkbackRef.current.set(id, { source, talking: false });
+        return () => {
+          talkbackRef.current.delete(id);
+        };
+      },
+      updateTalkback(id, source, talking) {
+        if (!talkbackRef.current.has(id)) return;
+        talkbackRef.current.set(id, { source, talking });
+      },
+      isTalkbackActive(source) {
+        return [...talkbackRef.current.values()].some(
+          value =>
+            value.talking &&
+            value.source.type === source.type &&
+            value.source.uuid === source.uuid
+        );
       },
     };
   }

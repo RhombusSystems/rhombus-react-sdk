@@ -1,7 +1,7 @@
 {
   "name": "@rhombussystems/react",
-  "version": "2.1.1",
-  "description": "React components for Rhombus video and audio streaming",
+  "version": "2.2.0",
+  "description": "React components for Rhombus video, audio playback, and two-way talkback",
   "license": "MIT",
   "author": "Rhombus Systems",
   "repository": {

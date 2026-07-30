@@ -1,14 +1,20 @@
 export { RhombusBufferedPlayer } from "./RhombusBufferedPlayer.js";
 export { RhombusRealtimePlayer } from "./RhombusRealtimePlayer.js";
 export { RhombusPlayer } from "./RhombusPlayer.js";
+export { RhombusMediaPlayer } from "./RhombusMediaPlayer.js";
 export { RhombusPlayerControls } from "./RhombusPlayerControls.js";
 export { RhombusAudioPlayer } from "./RhombusAudioPlayer.js";
+export { RhombusTalkback } from "./RhombusTalkback.js";
+export { RhombusMicrophoneControl } from "./RhombusMicrophoneControl.js";
 export {
   RhombusAudioPlayerControls,
 } from "./RhombusAudioPlayerControls.js";
 export type {
   RhombusAudioPlayerControlsProps,
 } from "./RhombusAudioPlayerControls.js";
+export type {
+  RhombusMicrophoneControlProps,
+} from "./RhombusMicrophoneControl.js";
 export { useRhombusPlaybackController } from "./useRhombusPlaybackController.js";
 export { RhombusDateTimePicker } from "./RhombusDateTimePicker.js";
 export type {
@@ -57,6 +63,24 @@ export type {
   RhombusAudioPlayerHandle,
   RhombusAudioPlayerState,
   RhombusAudioPlayerClassNames,
+  RhombusTalkbackProps,
+  RhombusTalkbackHandle,
+  RhombusTalkbackState,
+  RhombusTalkbackStatus,
+  RhombusTalkbackCapability,
+  RhombusTalkbackInteractionMode,
+  RhombusResolvedTalkbackInteractionMode,
+  RhombusTalkbackBlockedReason,
+  RhombusTalkbackClassNames,
+  RhombusTalkbackStyles,
+  RhombusMicrophonePermission,
+  RhombusMediaPlayerProps,
+  RhombusMediaPlayerHandle,
+  RhombusMediaPlayerClassNames,
+  RhombusMediaPlayerStyles,
+  RhombusMediaPlayerVideoProps,
+  RhombusMediaPlayerAudioProps,
+  RhombusMediaPlayerTalkbackProps,
   // Timeline
   TimelineProps,
   TimelineMark,

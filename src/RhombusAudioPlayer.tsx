@@ -431,6 +431,12 @@ export const RhombusAudioPlayer = forwardRef<
           consecutiveMalformedMessages = 0;
           if (message.timestampMs != null) lastTimestamp = message.timestampMs;
           message.frames.forEach((frame, index) => {
+            if (
+              frame.farAudio &&
+              controllerInternals.isTalkbackActive(source)
+            ) {
+              return;
+            }
             engine.enqueueOpus(
               frame.data,
               lastTimestamp == null

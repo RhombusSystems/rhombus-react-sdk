@@ -8,6 +8,11 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RhombusAudioPlayer } from "./RhombusAudioPlayer.js";
+import {
+  getRhombusPlaybackControllerInternals,
+  useRhombusPlaybackController,
+} from "./useRhombusPlaybackController.js";
+import { useEffect } from "react";
 
 const mocks = vi.hoisted(() => ({
   engines: [] as Array<{
@@ -228,6 +233,59 @@ describe("RhombusAudioPlayer transports", () => {
       })
     );
     expect(socket.close).toHaveBeenCalled();
+  });
+
+  it("suppresses far-audio echo frames while matching talkback is active", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(mediaResponse), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    function PlayerWithTalkbackActivity() {
+      const controller = useRhombusPlaybackController();
+      useEffect(() => {
+        const internals = getRhombusPlaybackControllerInternals(controller);
+        const unregister = internals.registerTalkback("test-talkback", {
+          type: "audio-gateway",
+          uuid: "gateway-1",
+        });
+        internals.updateTalkback(
+          "test-talkback",
+          { type: "audio-gateway", uuid: "gateway-1" },
+          true
+        );
+        return unregister;
+      }, [controller]);
+      return (
+        <RhombusAudioPlayer
+          source={{ type: "audio-gateway", uuid: "gateway-1" }}
+          federatedSessionToken="token"
+          playbackController={controller}
+          controls={[]}
+        />
+      );
+    }
+
+    render(<PlayerWithTalkbackActivity />);
+    await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+    const packet = new Uint8Array([
+      0x84, 0, 0, 2, 9, 9,
+      0x04, 0, 0, 2, 1, 2,
+    ]).buffer;
+    act(() => {
+      MockWebSocket.instances[0].onmessage?.({
+        data: packet,
+      } as MessageEvent);
+    });
+
+    expect(mocks.engines[0]?.enqueueOpus).toHaveBeenCalledTimes(1);
+    expect(mocks.engines[0]?.enqueueOpus).toHaveBeenCalledWith(
+      new Uint8Array([1, 2]),
+      undefined
+    );
   });
 
   it("resumes Web Audio directly from the unmute gesture", async () => {
