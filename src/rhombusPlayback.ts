@@ -14,6 +14,7 @@ import type {
   RhombusBufferedStreamQuality,
   RhombusBufferedPlayerProps,
   RhombusConnectionMode,
+  RhombusVideoDeviceType,
 } from "./types.js";
 import { appendFederatedAuthQueryParams, joinUrl } from "./urlAuth.js";
 
@@ -97,6 +98,25 @@ export function getFederatedTokenRefreshDelayMs(args: {
 }
 
 export const DEFAULT_RHOMBUS_API_BASE_URL = "https://api2.rhombussystems.com/api";
+
+/**
+ * Media-URIs request body for a video device. Direct Rhombus mode speaks each endpoint's native
+ * request shape (`/camera/getMediaUris` takes `cameraUuid`; `/doorbellcamera/getMediaUris` takes
+ * `deviceUuid`). Proxy mode always sends `cameraUuid` (backward compatible) plus
+ * `deviceType: "doorbell"` when applicable so the integrator's server can route.
+ */
+export function buildMediaUrisRequestBody(
+  cameraUuid: string,
+  deviceType: RhombusVideoDeviceType | undefined,
+  mode: "direct" | "override"
+): Record<string, unknown> {
+  if (deviceType === "doorbell") {
+    return mode === "direct"
+      ? { deviceUuid: cameraUuid }
+      : { cameraUuid, deviceType: "doorbell" };
+  }
+  return { cameraUuid };
+}
 
 const LOG_PREFIX = "[RhombusBufferedPlayer]";
 
@@ -292,12 +312,13 @@ export async function fetchLiveMpdUriViaOverride(
   requestHeaders: HeadersInit,
   cameraUuid: string,
   usedDefaultMediaPath: boolean,
-  connectionMode: RhombusConnectionMode
+  connectionMode: RhombusConnectionMode,
+  deviceType?: RhombusVideoDeviceType
 ): Promise<string> {
   const mediaRes = await fetch(absoluteUrl, {
     method: "POST",
     headers: requestHeaders,
-    body: JSON.stringify({ cameraUuid }),
+    body: JSON.stringify(buildMediaUrisRequestBody(cameraUuid, deviceType, "override")),
   });
   if (!mediaRes.ok) {
     const hint = usedDefaultMediaPath
@@ -317,7 +338,8 @@ export async function fetchLiveMpdUriDirect(
   mediaPath: string,
   federatedSessionToken: string,
   cameraUuid: string,
-  connectionMode: RhombusConnectionMode
+  connectionMode: RhombusConnectionMode,
+  deviceType?: RhombusVideoDeviceType
 ): Promise<string> {
   const absoluteUrl = joinUrl(rhombusApiBaseUrl, mediaPath);
   try {
@@ -329,7 +351,7 @@ export async function fetchLiveMpdUriDirect(
         "x-auth-scheme": "federated-token",
         "x-auth-ft": federatedSessionToken,
       },
-      body: JSON.stringify({ cameraUuid }),
+      body: JSON.stringify(buildMediaUrisRequestBody(cameraUuid, deviceType, "direct")),
     });
     if (!mediaRes.ok) {
       if (mediaRes.status === 401 || mediaRes.status === 403) {
@@ -358,12 +380,13 @@ export async function fetchVodMpdUriViaOverride(
   usedDefaultMediaPath: boolean,
   connectionMode: RhombusConnectionMode,
   startTimeSec: number,
-  durationSec: number
+  durationSec: number,
+  deviceType?: RhombusVideoDeviceType
 ): Promise<string> {
   const mediaRes = await fetch(absoluteUrl, {
     method: "POST",
     headers: requestHeaders,
-    body: JSON.stringify({ cameraUuid }),
+    body: JSON.stringify(buildMediaUrisRequestBody(cameraUuid, deviceType, "override")),
   });
   if (!mediaRes.ok) {
     const hint = usedDefaultMediaPath
@@ -386,7 +409,8 @@ export async function fetchVodMpdUriDirect(
   cameraUuid: string,
   connectionMode: RhombusConnectionMode,
   startTimeSec: number,
-  durationSec: number
+  durationSec: number,
+  deviceType?: RhombusVideoDeviceType
 ): Promise<string> {
   const absoluteUrl = joinUrl(rhombusApiBaseUrl, mediaPath);
   try {
@@ -398,7 +422,7 @@ export async function fetchVodMpdUriDirect(
         "x-auth-scheme": "federated-token",
         "x-auth-ft": federatedSessionToken,
       },
-      body: JSON.stringify({ cameraUuid }),
+      body: JSON.stringify(buildMediaUrisRequestBody(cameraUuid, deviceType, "direct")),
     });
     if (!mediaRes.ok) {
       if (mediaRes.status === 401 || mediaRes.status === 403) {

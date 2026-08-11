@@ -15,6 +15,7 @@ import { startRhombusRealtimeSession } from "./rhombusRealtimeSession.js";
 const DEFAULT_FEDERATED_PATH = "/api/federated-token";
 const DEFAULT_MEDIA_PATH_OVERRIDE = "/api/media-uris";
 const DEFAULT_MEDIA_PATH_DIRECT = "/camera/getMediaUris";
+const DEFAULT_MEDIA_PATH_DIRECT_DOORBELL = "/doorbellcamera/getMediaUris";
 
 const DEFAULT_REALTIME_MAX_RETRY_INTERVAL_MS = 30_000;
 const DEFAULT_REALTIME_STALL_TIMEOUT_MS = 12_000;
@@ -25,6 +26,7 @@ export const RhombusRealtimePlayer = forwardRef<
 >(function RhombusRealtimePlayer(
   {
     cameraUuid,
+    deviceType,
     connectionMode,
     apiOverrideBaseUrl,
     rhombusApiBaseUrl,
@@ -76,9 +78,14 @@ export const RhombusRealtimePlayer = forwardRef<
 
   const overrideBase = apiOverrideBaseUrl?.trim() || undefined;
   const useDirectRhombusApi = overrideBase === undefined;
+  const resolvedDeviceType = deviceType ?? "camera";
   const federatedPath = paths?.federatedToken ?? DEFAULT_FEDERATED_PATH;
+  const defaultDirectMediaPath =
+    resolvedDeviceType === "doorbell"
+      ? paths?.dr40MediaUris ?? DEFAULT_MEDIA_PATH_DIRECT_DOORBELL
+      : DEFAULT_MEDIA_PATH_DIRECT;
   const mediaPath = useDirectRhombusApi
-    ? paths?.mediaUris ?? DEFAULT_MEDIA_PATH_DIRECT
+    ? paths?.mediaUris ?? defaultDirectMediaPath
     : paths?.mediaUris ?? DEFAULT_MEDIA_PATH_OVERRIDE;
   const usedDefaultFederatedPath = paths?.federatedToken === undefined;
   const usedDefaultMediaPath = paths?.mediaUris === undefined;
@@ -126,6 +133,7 @@ export const RhombusRealtimePlayer = forwardRef<
           mediaPath,
           federatedSessionToken: tokenRef.current,
           cameraUuid,
+          deviceType: resolvedDeviceType,
           requestHeaders,
           usedDefaultMediaPath,
           connectionMode,
@@ -166,6 +174,7 @@ export const RhombusRealtimePlayer = forwardRef<
     resolvedRhombusBase,
     mediaPath,
     cameraUuid,
+    resolvedDeviceType,
     usedDefaultMediaPath,
     connectionMode,
     realtimeStreamQuality,
@@ -214,6 +223,7 @@ export const RhombusRealtimePlayer = forwardRef<
               mediaPath,
               federatedSessionToken: tokenRef.current,
               cameraUuid,
+              deviceType: resolvedDeviceType,
               requestHeaders,
               usedDefaultMediaPath,
               connectionMode,
@@ -287,6 +297,7 @@ export const RhombusRealtimePlayer = forwardRef<
           mediaPath,
           federatedSessionToken: tokenRef.current,
           cameraUuid,
+          deviceType: resolvedDeviceType,
           requestHeaders,
           usedDefaultMediaPath,
           connectionMode,
@@ -333,6 +344,7 @@ export const RhombusRealtimePlayer = forwardRef<
   }, [
     federatedTokenModeKey,
     cameraUuid,
+    resolvedDeviceType,
     connectionMode,
     overrideBase,
     federatedPath,
@@ -374,6 +386,7 @@ export const RhombusRealtimePlayer = forwardRef<
           mediaPath,
           federatedSessionToken: tokenRef.current,
           cameraUuid,
+          deviceType: resolvedDeviceType,
           requestHeaders,
           usedDefaultMediaPath,
           connectionMode,
@@ -416,6 +429,7 @@ export const RhombusRealtimePlayer = forwardRef<
     federatedPath,
     usedDefaultFederatedPath,
     cameraUuid,
+    resolvedDeviceType,
     connectionMode,
     mediaPath,
     resolvedRhombusBase,

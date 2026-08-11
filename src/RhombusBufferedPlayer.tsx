@@ -31,6 +31,7 @@ import { joinUrl } from "./urlAuth.js";
 const DEFAULT_FEDERATED_PATH = "/api/federated-token";
 const DEFAULT_MEDIA_PATH_OVERRIDE = "/api/media-uris";
 const DEFAULT_MEDIA_PATH_DIRECT = "/camera/getMediaUris";
+const DEFAULT_MEDIA_PATH_DIRECT_DOORBELL = "/doorbellcamera/getMediaUris";
 
 const DEFAULT_VOD_DURATION_SEC = 7200;
 
@@ -49,6 +50,7 @@ export const RhombusBufferedPlayer = forwardRef<
 >(function RhombusBufferedPlayer(
   {
     cameraUuid,
+    deviceType,
     connectionMode,
     apiOverrideBaseUrl,
     rhombusApiBaseUrl,
@@ -140,9 +142,14 @@ export const RhombusBufferedPlayer = forwardRef<
 
   const overrideBase = apiOverrideBaseUrl?.trim() || undefined;
   const useDirectRhombusApi = overrideBase === undefined;
+  const resolvedDeviceType = deviceType ?? "camera";
   const federatedPath = paths?.federatedToken ?? DEFAULT_FEDERATED_PATH;
+  const defaultDirectMediaPath =
+    resolvedDeviceType === "doorbell"
+      ? paths?.dr40MediaUris ?? DEFAULT_MEDIA_PATH_DIRECT_DOORBELL
+      : DEFAULT_MEDIA_PATH_DIRECT;
   const mediaPath = useDirectRhombusApi
-    ? paths?.mediaUris ?? DEFAULT_MEDIA_PATH_DIRECT
+    ? paths?.mediaUris ?? defaultDirectMediaPath
     : paths?.mediaUris ?? DEFAULT_MEDIA_PATH_OVERRIDE;
   const usedDefaultFederatedPath = paths?.federatedToken === undefined;
   const usedDefaultMediaPath = paths?.mediaUris === undefined;
@@ -252,7 +259,8 @@ export const RhombusBufferedPlayer = forwardRef<
             cameraUuid,
             effectiveConnectionMode,
             startTimeSec,
-            vodDurationSec
+            vodDurationSec,
+            resolvedDeviceType
           );
         } else {
           manifestUri = await fetchVodMpdUriViaOverride(
@@ -262,7 +270,8 @@ export const RhombusBufferedPlayer = forwardRef<
             usedDefaultMediaPath,
             effectiveConnectionMode,
             startTimeSec,
-            vodDurationSec
+            vodDurationSec,
+            resolvedDeviceType
           );
         }
       } else {
@@ -272,7 +281,8 @@ export const RhombusBufferedPlayer = forwardRef<
             mediaPath,
             tokenRef.current,
             cameraUuid,
-            effectiveConnectionMode
+            effectiveConnectionMode,
+            resolvedDeviceType
           );
         } else {
           manifestUri = await fetchLiveMpdUriViaOverride(
@@ -280,7 +290,8 @@ export const RhombusBufferedPlayer = forwardRef<
             requestHeaders,
             cameraUuid,
             usedDefaultMediaPath,
-            effectiveConnectionMode
+            effectiveConnectionMode,
+            resolvedDeviceType
           );
         }
       }
@@ -548,6 +559,7 @@ export const RhombusBufferedPlayer = forwardRef<
   }, [
     federatedTokenModeKey,
     cameraUuid,
+    resolvedDeviceType,
     effectiveConnectionMode,
     overrideBase,
     federatedPath,

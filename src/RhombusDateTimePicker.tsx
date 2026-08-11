@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { FOOTAGE_LIVE_GRACE_MS, fetchPresenceWindows } from "./rhombusPresence.js";
-import type { RhombusFootageAvailability, RhombusPlayerPaths } from "./types.js";
+import type {
+  RhombusFootageAvailability,
+  RhombusPlayerPaths,
+  RhombusVideoDeviceType,
+} from "./types.js";
 
 /**
  * Default styles for the date/time picker, injected once and wrapped in `:where()` so any
@@ -69,6 +73,8 @@ export type RhombusDateTimePickerProps = {
    * `disableFootageCheck` — for a plain calendar.
    */
   cameraUuid?: string;
+  /** Device family for the presence fetch. `"doorbell"` for DR40 video intercoms. Default `"camera"`. */
+  deviceType?: RhombusVideoDeviceType;
   /** Proxy base URL for the presence fetch (same semantics as the players). */
   apiOverrideBaseUrl?: string;
   /** Rhombus REST API base for direct mode. */
@@ -146,6 +152,7 @@ export function RhombusDateTimePicker({
   value,
   onChange,
   cameraUuid,
+  deviceType,
   apiOverrideBaseUrl,
   rhombusApiBaseUrl,
   paths,
@@ -213,7 +220,7 @@ export function RhombusDateTimePicker({
   useEffect(() => {
     monthCacheRef.current.clear();
     setMonthCacheVersion(v => v + 1);
-  }, [cameraUuid, apiOverrideBaseUrl, rhombusApiBaseUrl, federatedSessionToken]);
+  }, [cameraUuid, deviceType, apiOverrideBaseUrl, rhombusApiBaseUrl, federatedSessionToken]);
 
   const [viewYear, viewMonth] = viewYm;
   useEffect(() => {
@@ -234,6 +241,7 @@ export function RhombusDateTimePicker({
           headers,
           getRequestHeaders,
           cameraUuid,
+          deviceType,
           startTimeSec: monthStartMs / 1000,
           durationSec: (monthEndMs - monthStartMs) / 1000,
         });
@@ -254,6 +262,7 @@ export function RhombusDateTimePicker({
     open,
     footageCheckEnabled,
     cameraUuid,
+    deviceType,
     apiOverrideBaseUrl,
     rhombusApiBaseUrl,
     paths?.presenceWindows,

@@ -85,6 +85,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
   function RhombusPlayer(props, ref) {
     const {
       cameraUuid,
+      deviceType,
       connectionMode = "wan",
       playbackController,
       liveTransport: liveTransportProp,
@@ -554,6 +555,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
                 headers: props.headers,
                 getRequestHeaders: props.getRequestHeaders,
                 cameraUuid,
+                deviceType,
                 startTimeSec: startSec,
                 durationSec: Math.ceil(checkEndMs / 1000) - startSec,
                 signal: controller.signal,
@@ -1045,6 +1047,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
 
     const baseChildProps = {
       cameraUuid,
+      deviceType,
       apiOverrideBaseUrl: props.apiOverrideBaseUrl,
       rhombusApiBaseUrl: props.rhombusApiBaseUrl,
       paths: props.paths,
@@ -1186,6 +1189,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
               value={mode === "live" ? null : state.currentWallClockMs}
               onChange={seekTo}
               cameraUuid={cameraUuid}
+              deviceType={deviceType}
               apiOverrideBaseUrl={props.apiOverrideBaseUrl}
               rhombusApiBaseUrl={props.rhombusApiBaseUrl}
               paths={props.paths}
@@ -1201,6 +1205,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
           {(controls === undefined || controls.includes("timeline")) && (
             <Timeline
               cameraUuid={cameraUuid}
+              deviceType={deviceType}
               playbackController={playbackController}
               className={cx("rhombus-player-timeline", classNames?.timeline)}
               apiOverrideBaseUrl={props.apiOverrideBaseUrl}

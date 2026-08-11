@@ -1,6 +1,11 @@
 import { firstMediaUri } from "./mediaUriPick.js";
+import { buildMediaUrisRequestBody } from "./rhombusPlayback.js";
 import { formatWebsocketResolutionUri } from "./resolutionModifiers.js";
-import type { RhombusRealtimeConnectionMode, RhombusRealtimeStreamQuality } from "./types.js";
+import type {
+  RhombusRealtimeConnectionMode,
+  RhombusRealtimeStreamQuality,
+  RhombusVideoDeviceType,
+} from "./types.js";
 import { appendFederatedAuthQueryParams, joinUrl } from "./urlAuth.js";
 
 const LOG_PREFIX = "[RhombusRealtimePlayer]";
@@ -53,7 +58,8 @@ export async function fetchCameraMediaUrisJsonDirect(
   rhombusApiBaseUrl: string,
   mediaPath: string,
   federatedSessionToken: string,
-  cameraUuid: string
+  cameraUuid: string,
+  deviceType?: RhombusVideoDeviceType
 ): Promise<unknown> {
   const absoluteUrl = joinUrl(rhombusApiBaseUrl, mediaPath);
   try {
@@ -65,7 +71,7 @@ export async function fetchCameraMediaUrisJsonDirect(
         "x-auth-scheme": "federated-token",
         "x-auth-ft": federatedSessionToken,
       },
-      body: JSON.stringify({ cameraUuid }),
+      body: JSON.stringify(buildMediaUrisRequestBody(cameraUuid, deviceType, "direct")),
     });
     if (!mediaRes.ok) {
       if (mediaRes.status === 401 || mediaRes.status === 403) {
@@ -90,12 +96,13 @@ export async function fetchCameraMediaUrisJsonViaOverride(
   absoluteUrl: string,
   requestHeaders: HeadersInit,
   cameraUuid: string,
-  usedDefaultMediaPath: boolean
+  usedDefaultMediaPath: boolean,
+  deviceType?: RhombusVideoDeviceType
 ): Promise<unknown> {
   const mediaRes = await fetch(absoluteUrl, {
     method: "POST",
     headers: requestHeaders,
-    body: JSON.stringify({ cameraUuid }),
+    body: JSON.stringify(buildMediaUrisRequestBody(cameraUuid, deviceType, "override")),
   });
   if (!mediaRes.ok) {
     const hint = usedDefaultMediaPath
@@ -116,6 +123,8 @@ export async function resolveLiveH264WebSocketUrl(options: {
   mediaPath: string;
   federatedSessionToken: string;
   cameraUuid: string;
+  /** Default `"camera"`. `"doorbell"` targets the DR40 `/doorbellcamera/*` request shape. */
+  deviceType?: RhombusVideoDeviceType;
   requestHeaders: HeadersInit;
   usedDefaultMediaPath: boolean;
   connectionMode: RhombusRealtimeConnectionMode;
@@ -127,13 +136,15 @@ export async function resolveLiveH264WebSocketUrl(options: {
         options.rhombusApiBaseUrl,
         options.mediaPath,
         options.federatedSessionToken,
-        options.cameraUuid
+        options.cameraUuid,
+        options.deviceType
       )
     : await fetchCameraMediaUrisJsonViaOverride(
         joinUrl(options.overrideBase!, options.mediaPath),
         options.requestHeaders,
         options.cameraUuid,
-        options.usedDefaultMediaPath
+        options.usedDefaultMediaPath,
+        options.deviceType
       );
 
   const realtimeStreamQuality = options.realtimeStreamQuality ?? "HD";

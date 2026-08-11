@@ -15,6 +15,18 @@ export type RhombusRealtimeStreamQuality = "HD" | "SD";
 /** WAN vs LAN media selection from `getMediaUris` (buffered DASH and realtime WebSocket). */
 export type RhombusConnectionMode = "wan" | "lan";
 
+/**
+ * Which Rhombus device family serves the video stream. `"camera"` (default) covers the standard
+ * camera line (R-series, third-party relay cameras); `"doorbell"` covers DR40 video intercoms,
+ * whose media lives behind the `/doorbellcamera/*` API namespace instead of `/camera/*`.
+ *
+ * In **direct Rhombus mode** the players switch their default endpoints and request bodies to the
+ * doorbell equivalents (`/doorbellcamera/getMediaUris` with `{ deviceUuid }`, etc.). In **proxy
+ * mode** (`apiOverrideBaseUrl` set) the request bodies keep `cameraUuid` and additionally carry
+ * `deviceType: "doorbell"` so your server can route to the doorbell endpoints.
+ */
+export type RhombusVideoDeviceType = "camera" | "doorbell";
+
 export type RhombusPlayerPaths = {
   /**
    * POST path for federated session token. Resolved against `apiOverrideBaseUrl` when set, otherwise against
@@ -24,7 +36,8 @@ export type RhombusPlayerPaths = {
   federatedToken?: string;
   /**
    * POST path for media URIs. When `apiOverrideBaseUrl` is set, resolved against that base (default `/api/media-uris`).
-   * When omitted on `RhombusBufferedPlayer`, resolved against `rhombusApiBaseUrl` (default `/camera/getMediaUris`).
+   * When omitted on `RhombusBufferedPlayer`, resolved against `rhombusApiBaseUrl` (default `/camera/getMediaUris`,
+   * or `paths.dr40MediaUris` → `/doorbellcamera/getMediaUris` when `deviceType` is `"doorbell"`).
    */
   mediaUris?: string;
   /**
@@ -34,7 +47,10 @@ export type RhombusPlayerPaths = {
   audioMediaUris?: string;
   /** Direct Rhombus path for A100 media URIs. Default `/audiogateway/getMediaUris`. */
   audioGatewayMediaUris?: string;
-  /** Direct Rhombus path for DR40 media URIs. Default `/doorbellcamera/getMediaUris`. */
+  /**
+   * Direct Rhombus path for DR40 media URIs (audio sources of type `"dr40"` and video players
+   * with `deviceType: "doorbell"`). Default `/doorbellcamera/getMediaUris`.
+   */
   dr40MediaUris?: string;
   /**
    * POST path for the application-owned talkback capability proxy. Default
@@ -46,14 +62,16 @@ export type RhombusPlayerPaths = {
    * POST path for footage seekpoints (`/camera/getFootageSeekpointsV2`). Used by {@link Timeline} when
    * `fetchSeekPoints` is enabled. In proxy mode resolved against `apiOverrideBaseUrl` (default
    * `/api/footage-seekpoints`); in direct Rhombus mode resolved against `rhombusApiBaseUrl`
-   * (default `/camera/getFootageSeekpointsV2`).
+   * (default `/camera/getFootageSeekpointsV2`, or `/doorbellcamera/getSeekpoints` when
+   * `deviceType` is `"doorbell"`).
    */
   footageSeekpoints?: string;
   /**
    * POST path for footage availability (`/camera/getPresenceWindows`). Used by {@link Timeline} when
    * `fetchAvailability` is enabled and by the built-in Save Clip pre-check. In proxy mode resolved
    * against `apiOverrideBaseUrl` (default `/api/presence-windows`); in direct Rhombus mode resolved
-   * against `rhombusApiBaseUrl` (default `/camera/getPresenceWindows`).
+   * against `rhombusApiBaseUrl` (default `/camera/getPresenceWindows`, or
+   * `/doorbellcamera/getPresenceWindows` when `deviceType` is `"doorbell"`).
    */
   presenceWindows?: string;
 };
@@ -130,8 +148,14 @@ export type RhombusMediaBaseProps = {
 
 /** Shared media props plus the camera identifier required by the video players. */
 export type RhombusPlayerBaseProps = RhombusMediaBaseProps & {
-  /** Camera UUID from Rhombus (safe to use in the browser). */
+  /** Camera UUID from Rhombus (safe to use in the browser). For a DR40 this is the doorbell's device UUID. */
   cameraUuid: string;
+  /**
+   * Device family serving the stream. Set `"doorbell"` for DR40 video intercoms so media,
+   * seekpoint, and availability requests target the `/doorbellcamera/*` endpoints (direct mode)
+   * or carry `deviceType: "doorbell"` for your proxy to route (proxy mode). Default `"camera"`.
+   */
+  deviceType?: RhombusVideoDeviceType;
 };
 
 export type RhombusBufferedPlayerProps = RhombusPlayerBaseProps & {
@@ -538,6 +562,12 @@ export type TimelineProps = RhombusMediaBaseProps & {
    * `fetchSeekPoints` is true; it may be omitted for a controller-driven or vendor-neutral timeline.
    */
   cameraUuid?: string;
+  /**
+   * Device family for `fetchSeekPoints` / `fetchAvailability` requests. Set `"doorbell"` for DR40
+   * video intercoms (`/doorbellcamera/getSeekpoints` / `getPresenceWindows` in direct mode;
+   * `deviceType: "doorbell"` in proxy-mode bodies). Default `"camera"`.
+   */
+  deviceType?: RhombusVideoDeviceType;
   /** Shared controller used as the playhead and seek target when provided. */
   playbackController?: RhombusPlaybackController;
   /** Left edge of the visible time window (epoch ms). */
@@ -1104,6 +1134,12 @@ export type RhombusMediaPlayerProps = Omit<
   audioSource: RhombusAudioSource;
   /** Optional camera. Omit it for a standalone audio/talkback page. */
   cameraUuid?: string;
+  /**
+   * Device family for the video participant. Defaults to `"doorbell"` when `cameraUuid`
+   * matches a `"dr40"` `audioSource` (the DR40 is both the camera and the audio device),
+   * otherwise `"camera"`. Set explicitly to override the inference.
+   */
+  deviceType?: RhombusVideoDeviceType;
   /**
    * Optional external controller. When omitted, the facade creates and owns one
    * controller shared by every rendered participant.

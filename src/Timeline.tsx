@@ -6,6 +6,7 @@ import { appendFederatedAuthQueryParams, joinUrl } from "./urlAuth.js";
 import type {
   RhombusFootageAvailability,
   RhombusFootageSeekPoint,
+  RhombusVideoDeviceType,
   TimelineColors,
   TimelineProps,
 } from "./types.js";
@@ -16,6 +17,7 @@ const DEFAULT_SELECTION_MAX_MS = 3_600_000;
 
 const DEFAULT_FOOTAGE_PATH_OVERRIDE = "/api/footage-seekpoints";
 const DEFAULT_FOOTAGE_PATH_DIRECT = "/camera/getFootageSeekpointsV2";
+const DEFAULT_FOOTAGE_PATH_DIRECT_DOORBELL = "/doorbellcamera/getSeekpoints";
 const DEFAULT_HEIGHT = 56;
 const MAX_SEEKPOINT_ROWS = 5;
 const SEEKPOINT_MERGE_PX = 6;
@@ -125,6 +127,7 @@ type SeekpointFetchConfig = {
   headers?: HeadersInit;
   getRequestHeaders?: () => HeadersInit | Promise<HeadersInit>;
   cameraUuid: string;
+  deviceType?: RhombusVideoDeviceType;
   startTimeSec: number;
   durationSec: number;
   includeAnyMotion: boolean;
@@ -133,17 +136,33 @@ type SeekpointFetchConfig = {
 async function fetchFootageSeekpoints(cfg: SeekpointFetchConfig): Promise<RhombusFootageSeekPoint[]> {
   const overrideBase = cfg.apiOverrideBaseUrl?.trim() || undefined;
   const useDirect = overrideBase === undefined;
+  const isDoorbell = cfg.deviceType === "doorbell";
   const path =
     cfg.footageSeekpointsPath ??
-    (useDirect ? DEFAULT_FOOTAGE_PATH_DIRECT : DEFAULT_FOOTAGE_PATH_OVERRIDE);
+    (useDirect
+      ? isDoorbell
+        ? DEFAULT_FOOTAGE_PATH_DIRECT_DOORBELL
+        : DEFAULT_FOOTAGE_PATH_DIRECT
+      : DEFAULT_FOOTAGE_PATH_OVERRIDE);
 
   const requestHeaders = await mergeRequestHeaders(cfg.headers, cfg.getRequestHeaders);
-  const body = {
-    cameraUuid: cfg.cameraUuid,
-    startTime: cfg.startTimeSec,
-    duration: cfg.durationSec,
-    includeAnyMotion: cfg.includeAnyMotion,
-  };
+  // `/doorbellcamera/getSeekpoints` speaks `{ deviceUuid, startTimeSec, durationSecs }`;
+  // proxy mode keeps the camera-shaped body and tags it with `deviceType` for server routing.
+  const body =
+    useDirect && isDoorbell
+      ? {
+          deviceUuid: cfg.cameraUuid,
+          startTimeSec: cfg.startTimeSec,
+          durationSecs: cfg.durationSec,
+          includeAnyMotion: cfg.includeAnyMotion,
+        }
+      : {
+          cameraUuid: cfg.cameraUuid,
+          startTime: cfg.startTimeSec,
+          duration: cfg.durationSec,
+          includeAnyMotion: cfg.includeAnyMotion,
+          ...(isDoorbell ? { deviceType: "doorbell" } : {}),
+        };
 
   let url: string;
   if (useDirect) {
@@ -225,6 +244,7 @@ const NAV_BTN_STYLE: React.CSSProperties = {
 export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timeline(
   {
     cameraUuid,
+    deviceType,
     playbackController,
     apiOverrideBaseUrl,
     rhombusApiBaseUrl,
@@ -373,6 +393,7 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
           headers,
           getRequestHeaders,
           cameraUuid,
+          deviceType,
           startTimeSec: fetchStartSec,
           durationSec: fetchDurationSec,
           includeAnyMotion,
@@ -397,6 +418,7 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
     headers,
     getRequestHeaders,
     cameraUuid,
+    deviceType,
     fetchStartSec,
     fetchDurationSec,
     includeAnyMotion,
@@ -427,6 +449,7 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
           headers,
           getRequestHeaders,
           cameraUuid,
+          deviceType,
           startTimeSec: fetchStartSec,
           durationSec: fetchDurationSec,
         });
@@ -452,6 +475,7 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
     headers,
     getRequestHeaders,
     cameraUuid,
+    deviceType,
     fetchStartSec,
     fetchDurationSec,
     refreshKey,

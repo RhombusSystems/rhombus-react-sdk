@@ -5,6 +5,7 @@ import type {
   RhombusFootageGap,
   RhombusFootageWindow,
   RhombusRangeCoverage,
+  RhombusVideoDeviceType,
 } from "./types.js";
 
 /**
@@ -25,6 +26,7 @@ import type {
 
 const DEFAULT_PRESENCE_PATH_OVERRIDE = "/api/presence-windows";
 const DEFAULT_PRESENCE_PATH_DIRECT = "/camera/getPresenceWindows";
+const DEFAULT_PRESENCE_PATH_DIRECT_DOORBELL = "/doorbellcamera/getPresenceWindows";
 
 /**
  * Adjacent presence windows commonly have sub-second seams between 2-second media segments;
@@ -55,6 +57,8 @@ export type FetchPresenceWindowsOptions = {
   /** Async headers merged after `headers`. */
   getRequestHeaders?: () => HeadersInit | Promise<HeadersInit>;
   cameraUuid: string;
+  /** Device family. `"doorbell"` targets `/doorbellcamera/getPresenceWindows`. Default `"camera"`. */
+  deviceType?: RhombusVideoDeviceType;
   /** Range start, epoch seconds. */
   startTimeSec: number;
   /** Range length in seconds. */
@@ -83,9 +87,14 @@ export async function fetchPresenceWindows(
 ): Promise<RhombusFootageAvailability> {
   const overrideBase = options.apiOverrideBaseUrl?.trim() || undefined;
   const useDirect = overrideBase === undefined;
+  const isDoorbell = options.deviceType === "doorbell";
   const path =
     options.presenceWindowsPath ??
-    (useDirect ? DEFAULT_PRESENCE_PATH_DIRECT : DEFAULT_PRESENCE_PATH_OVERRIDE);
+    (useDirect
+      ? isDoorbell
+        ? DEFAULT_PRESENCE_PATH_DIRECT_DOORBELL
+        : DEFAULT_PRESENCE_PATH_DIRECT
+      : DEFAULT_PRESENCE_PATH_OVERRIDE);
 
   let url: string;
   if (useDirect) {
@@ -99,8 +108,15 @@ export async function fetchPresenceWindows(
   }
 
   const headers = await mergeRequestHeaders(options.headers, options.getRequestHeaders);
+  // `/doorbellcamera/getPresenceWindows` takes `deviceUuid`; the remaining fields match the
+  // camera endpoint. Proxy mode keeps `cameraUuid` and tags the body for server routing.
   const body = {
-    cameraUuid: options.cameraUuid,
+    ...(useDirect && isDoorbell
+      ? { deviceUuid: options.cameraUuid }
+      : {
+          cameraUuid: options.cameraUuid,
+          ...(isDoorbell ? { deviceType: "doorbell" } : {}),
+        }),
     startTimeSec: Math.floor(options.startTimeSec),
     durationSec: Math.ceil(options.durationSec),
   };

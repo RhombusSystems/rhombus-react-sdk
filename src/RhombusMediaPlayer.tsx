@@ -36,6 +36,7 @@ export const RhombusMediaPlayer = forwardRef<
   const {
     audioSource,
     cameraUuid,
+    deviceType,
     playbackController: externalController,
     playbackOptions,
     talkback = true,
@@ -68,6 +69,12 @@ export const RhombusMediaPlayer = forwardRef<
   const talkbackRef = useRef<RhombusTalkbackHandle>(null);
   const resolvedCameraUuid = cameraUuid?.trim() ?? "";
   const hasVideo = resolvedCameraUuid.length > 0;
+  /** A DR40 that is both the audio source and the camera serves its video as a doorbell device. */
+  const resolvedDeviceType =
+    deviceType ??
+    (audioSource.type === "dr40" && audioSource.uuid === resolvedCameraUuid
+      ? "doorbell"
+      : "camera");
 
   useEffect(() => {
     if (
@@ -181,6 +188,7 @@ export const RhombusMediaPlayer = forwardRef<
             {...sharedMediaProps}
             ref={videoRef}
             cameraUuid={resolvedCameraUuid}
+            deviceType={resolvedDeviceType}
             playbackController={playbackController}
           />
         </div>

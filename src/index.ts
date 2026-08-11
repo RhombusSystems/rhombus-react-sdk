@@ -31,6 +31,7 @@ export type {
   RhombusBufferedPlayerHandle,
   RhombusBufferedPlayerProps,
   RhombusConnectionMode,
+  RhombusVideoDeviceType,
   RhombusPlayerBaseProps,
   RhombusPlayerPaths,
   RhombusMediaBaseProps,

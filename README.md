@@ -177,7 +177,10 @@ Use it with a DR40:
 ```
 
 For a DR40, the video `cameraUuid` and `audioSource.uuid` must be the same device UUID for
-automatic audio ownership handoff. An A100 uses its **audio gateway UUID**, which is normally
+automatic audio ownership handoff — `RhombusMediaPlayer` then also infers
+`deviceType: "doorbell"` for the video participant, so its media resolves through
+`/doorbellcamera/getMediaUris`. (When composing `RhombusPlayer` yourself, pass
+`deviceType="doorbell"` explicitly.) An A100 uses its **audio gateway UUID**, which is normally
 different from the camera UUID. `RhombusMediaPlayer` creates and shares the controller
 automatically: the video timeline seeks both streams, the talkback control knows whether the
 page is live or historical, and matching incoming far-audio is suppressed while speaking.
@@ -316,6 +319,7 @@ return to the live edge before speaking.
 | --- | --- | --- | --- |
 | `audioSource` | `RhombusAudioSource` | required | A100 audio gateway or DR40 used for listening and talkback. |
 | `cameraUuid` | `string` | — | Optional synchronized video participant. Omit for audio-only. |
+| `deviceType` | `"camera" | "doorbell"` | inferred | Video device family. Defaults to `"doorbell"` when `cameraUuid` matches a `"dr40"` `audioSource`, else `"camera"`. |
 | `apiOverrideBaseUrl` and shared media props | `RhombusMediaBaseProps` | SDK defaults | Applied consistently to video, audio, and talkback. |
 | `playbackController` | `RhombusPlaybackController` | private controller | Join an existing playback group instead of creating one. |
 | `playbackOptions` | `RhombusPlaybackControllerOptions` | controller defaults | Seed the private controller's mode, time, play state, rate, volume, mute, and timeline behavior. |
@@ -456,7 +460,8 @@ common to all players.)
 
 | Prop                         | Type                                                  | Required | Default                               | Notes                                                                                                                                                                      |
 | ---------------------------- | ----------------------------------------------------- | -------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cameraUuid`                 | `string`                                              | ✅        | —                                     | Camera UUID from Rhombus. Safe in the browser.                                                                                                                             |
+| `cameraUuid`                 | `string`                                              | ✅        | —                                     | Camera UUID from Rhombus. Safe in the browser. For a DR40 this is the doorbell's device UUID.                                                                              |
+| `deviceType`                 | `"camera" | "doorbell"`                               | —        | `"camera"`                            | Set `"doorbell"` for DR40 video intercoms so media/seekpoint/availability requests target the `/doorbellcamera/*` endpoints (direct mode) or tag proxy bodies for routing. |
 | `connectionMode`             | `"wan" | "lan"`                                       | —        | `"wan"`                               | Which `getMediaUris` URIs to use. See [WAN vs LAN](#wan-vs-lan).                                                                                                           |
 | `apiOverrideBaseUrl`         | `string`                                              | —        | —                                     | Base for the token **and** media requests (proxy mode). Required for built-in [Save Clip](#save-clip). When omitted, media is fetched directly from Rhombus.               |
 | `rhombusApiBaseUrl`          | `string`                                              | —        | `https://api2.rhombussystems.com/api` | Rhombus REST base when `apiOverrideBaseUrl` is omitted.                                                                                                                    |
@@ -2132,8 +2137,10 @@ composing your own layout.
 
 These come from `RhombusMediaBaseProps` and are accepted by video players, the audio player,
 talkback, and `Timeline`. `RhombusPlayerBaseProps` extends this type with the `cameraUuid`
-required by video players. Audio/talkback use `source`; `Timeline` needs `cameraUuid` only
-when it fetches camera-specific data.
+required by video players plus the optional `deviceType` (`"camera"` | `"doorbell"`, default
+`"camera"` — set `"doorbell"` for DR40 video intercoms). Audio/talkback use `source`;
+`Timeline` needs `cameraUuid` (and `deviceType` for a DR40) only when it fetches
+camera-specific data.
 
 
 | Prop                    | Type                                                  | Default                               | Notes                                                                                                                                                  |
@@ -2569,11 +2576,17 @@ function CameraWithStatus({ cameraUuid }: { cameraUuid: string }) {
 Needed when `apiOverrideBaseUrl` is set. `POST` your `paths.mediaUris` route (default
 `/api/media-uris`):
 
-- **Request:** `{ "cameraUuid": string }`.
-- **Server:** forward Rhombus `POST /camera/getMediaUris` and return the JSON **as-is** so the
+- **Request:** `{ "cameraUuid": string }` — plus `"deviceType": "doorbell"` when the player
+was given `deviceType="doorbell"` (a DR40).
+- **Server:** forward Rhombus `POST /camera/getMediaUris` — or, when
+`deviceType === "doorbell"`, `POST /doorbellcamera/getMediaUris` with
+`{ deviceUuid: cameraUuid }` — and return the JSON **as-is** so the
 relevant fields survive: `wanLiveMpdUri` / `wanVodMpdUriTemplate` (WAN DASH), `lanLiveMpdUris`
 / `lanLiveMpdUri` / `lanVodMpdUrisTemplates` (LAN DASH), `wanLiveH264Uri(s)` /
-`lanLiveH264Uri(s)` (realtime).
+`lanLiveH264Uri(s)` (realtime). The same `deviceType` tag rides along on the
+`/api/footage-seekpoints` and `/api/presence-windows` bodies — route those to
+`/doorbellcamera/getSeekpoints` (`{ deviceUuid, startTimeSec, durationSecs, includeAnyMotion }`)
+and `/doorbellcamera/getPresenceWindows` (`{ deviceUuid, startTimeSec, durationSec }`).
 
 A minimal Express proxy:
 
@@ -2588,10 +2601,15 @@ app.post("/api/federated-token", async (req, res) => {
 });
 
 app.post("/api/media-uris", async (req, res) => {
-  const r = await fetch("https://api2.rhombussystems.com/api/camera/getMediaUris", {
+  const isDoorbell = req.body.deviceType === "doorbell"; // DR40 video intercom
+  const path = isDoorbell ? "/doorbellcamera/getMediaUris" : "/camera/getMediaUris";
+  const body = isDoorbell
+    ? { deviceUuid: req.body.cameraUuid }
+    : { cameraUuid: req.body.cameraUuid };
+  const r = await fetch(`https://api2.rhombussystems.com/api${path}`, {
     method: "POST",
     headers: { "x-auth-apikey": process.env.RHOMBUS_API_TOKEN, "content-type": "application/json" },
-    body: JSON.stringify({ cameraUuid: req.body.cameraUuid }),
+    body: JSON.stringify(body),
   });
   res.json(await r.json()); // return upstream as-is
 });
