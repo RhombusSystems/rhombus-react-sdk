@@ -70,6 +70,33 @@ const SEEK_SETTLE_THRESHOLD_MS = 1_500;
 const SEEK_SETTLE_MAX_MS = 8_000;
 /** A controlled `positionMs` within this of the current playhead is treated as "no change" (no re-seek). */
 const POSITION_DRIFT_MS = 1_500;
+/** Freeze-frame overlay: poll cadence while waiting for the realtime canvas's first decoded frame. */
+const FREEZE_FRAME_POLL_MS = 150;
+/** Safety cap on holding the freeze-frame over a realtime canvas that never paints. */
+const FREEZE_FRAME_MAX_HOLD_MS = 10_000;
+
+const STAGE_STYLE_ID = "rhombus-player-stage-styles";
+// The indicator animates purely in CSS (compositor-driven) so showing it costs no React
+// state, timers, or re-renders beyond the freeze-frame overlay's own mount/unmount.
+const STAGE_CSS = `
+:where(.rhombus-player-loading-indicator){position:absolute;right:12px;bottom:12px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:rgba(0,0,0,.45);pointer-events:none;}
+:where(.rhombus-player-loading-indicator)::after{content:"";width:16px;height:16px;border-radius:50%;border:2px solid rgba(255,255,255,.3);border-top-color:rgba(255,255,255,.95);animation:rhombus-player-loading-spin .9s linear infinite;}
+@keyframes rhombus-player-loading-spin{to{transform:rotate(360deg);}}
+@media (prefers-reduced-motion: reduce){:where(.rhombus-player-loading-indicator)::after{animation:rhombus-player-loading-pulse 1.2s ease-in-out infinite;border-top-color:rgba(255,255,255,.3);}}
+@keyframes rhombus-player-loading-pulse{50%{opacity:.35;}}
+`;
+
+function ensureStageStylesInjected() {
+  if (typeof document === "undefined") return;
+  let el = document.getElementById(STAGE_STYLE_ID) as HTMLStyleElement | null;
+  if (!el) {
+    el = document.createElement("style");
+    el.id = STAGE_STYLE_ID;
+    document.head.appendChild(el);
+  }
+  // Keep content in sync (handles dev/HMR where the tag persists across reloads of this module).
+  if (el.textContent !== STAGE_CSS) el.textContent = STAGE_CSS;
+}
 
 const cx = (...xs: Array<string | undefined | false>) => xs.filter(Boolean).join(" ");
 
@@ -78,6 +105,23 @@ function hasWebCodecs(): boolean {
     typeof window !== "undefined" &&
     typeof (window as unknown as { VideoDecoder?: unknown }).VideoDecoder !== "undefined"
   );
+}
+
+/**
+ * Whether a realtime canvas has decoded at least one frame. A drawn frame is fully opaque, while
+ * an untouched canvas is transparent, so one center pixel's alpha answers it. Fails open (true)
+ * when the pixels can't be inspected so the freeze-frame overlay can never get stuck.
+ */
+function canvasHasDecodedFrame(canvas: HTMLCanvasElement): boolean {
+  if (canvas.width === 0 || canvas.height === 0) return false;
+  try {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return true;
+    const pixel = ctx.getImageData(canvas.width >> 1, canvas.height >> 1, 1, 1).data;
+    return pixel[3] !== 0;
+  } catch {
+    return true;
+  }
 }
 
 
@@ -167,6 +211,9 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
     const [timelineZoomIndex, setTimelineZoomIndex] = useState(0);
     // Intrinsic video aspect ratio, measured for `videoFit="auto"` (defaults to 16:9 until known).
     const [intrinsicAspect, setIntrinsicAspect] = useState({ w: 16, h: 9 });
+    // Last displayed frame (data URL), held over the stage while a transport swap (realtime
+    // canvas ↔ buffered <video>) or a dash rebuild loads, so the stage never flashes black.
+    const [freezeFrameUrl, setFreezeFrameUrl] = useState<string | null>(null);
     // videoFit is "controllable": the prop seeds it and re-syncs when changed; the built-in
     // "videoFit" control mutates it internally and fires `onVideoFitChange`.
     const [videoFit, setVideoFit] = useState(videoFitProp);
@@ -280,14 +327,110 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
       return anchor;
     }, [getVideo]);
 
+    // ---- freeze-frame overlay (no black flash across transport swaps / dash rebuilds) ----
+    // Snapshot whatever is currently on screen *before* a state change unmounts the realtime
+    // canvas or rebuilds the dash player; the image covers the stage until the replacement
+    // media presents its first frame. Best-effort: when nothing capturable is showing yet the
+    // overlay is simply skipped.
+    const captureFreezeFrame = useCallback(() => {
+      try {
+        const canvas = getCanvas();
+        if (canvas && canvas.width > 0 && canvas.height > 0) {
+          setFreezeFrameUrl(canvas.toDataURL("image/jpeg", 0.85));
+          return;
+        }
+        const video = getVideo();
+        if (
+          video &&
+          video.videoWidth > 0 &&
+          video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+        ) {
+          const frame = document.createElement("canvas");
+          frame.width = video.videoWidth;
+          frame.height = video.videoHeight;
+          const ctx = frame.getContext("2d");
+          if (!ctx) return;
+          ctx.drawImage(video, 0, 0);
+          setFreezeFrameUrl(frame.toDataURL("image/jpeg", 0.85));
+        }
+      } catch {
+        /* tainted or unreadable frame: skip the overlay */
+      }
+    }, [getCanvas, getVideo]);
+
+    // A stale frame from another camera must never cover the stage.
+    useEffect(() => {
+      setFreezeFrameUrl(null);
+    }, [cameraUuid]);
+
+    useEffect(() => {
+      ensureStageStylesInjected();
+    }, []);
+
+    // Dismiss the freeze-frame once the replacement media is actually presenting frames.
+    // `onReady` is too early for both children (dash fires it before any segment is appended;
+    // realtime fires it on WebSocket open), so watch the elements themselves.
+    useEffect(() => {
+      if (freezeFrameUrl == null) return;
+      const video = getVideo();
+      if (video) {
+        let cleared = false;
+        const clear = () => {
+          if (cleared) return;
+          cleared = true;
+          setFreezeFrameUrl(null);
+        };
+        if (
+          video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+          video.videoWidth > 0 &&
+          !video.seeking
+        ) {
+          clear();
+          return;
+        }
+        const vfcVideo = video as HTMLVideoElement & {
+          requestVideoFrameCallback?: (callback: () => void) => number;
+          cancelVideoFrameCallback?: (handle: number) => void;
+        };
+        let vfcHandle: number | null = null;
+        if (typeof vfcVideo.requestVideoFrameCallback === "function") {
+          vfcHandle = vfcVideo.requestVideoFrameCallback(clear);
+        }
+        video.addEventListener("loadeddata", clear);
+        return () => {
+          cleared = true;
+          if (vfcHandle != null) vfcVideo.cancelVideoFrameCallback?.(vfcHandle);
+          video.removeEventListener("loadeddata", clear);
+        };
+      }
+      const canvas = getCanvas();
+      if (canvas) {
+        // Realtime has no first-frame event; poll for the first decoded (opaque) pixel.
+        const startedAtMs = Date.now();
+        const id = setInterval(() => {
+          if (
+            canvasHasDecodedFrame(canvas) ||
+            Date.now() - startedAtMs > FREEZE_FRAME_MAX_HOLD_MS
+          ) {
+            setFreezeFrameUrl(null);
+          }
+        }, FREEZE_FRAME_POLL_MS);
+        return () => clearInterval(id);
+      }
+    }, [freezeFrameUrl, mode, liveTransportState, vodAnchorMs, getVideo, getCanvas]);
+
     // ---- transport ----
     const setLiveTransport = useCallback((t: RhombusLiveTransport) => {
       const resolved = t === "realtime" && !hasWebCodecs() ? "buffered" : t;
+      // A live transport switch swaps canvas ↔ <video>; hold the current frame across it.
+      if (resolved !== liveTransportRef.current && modeRef.current === "live") {
+        captureFreezeFrame();
+      }
       setLiveTransportState(prev => {
         if (prev !== resolved) cbRef.current.onTransportChange?.(resolved);
         return resolved;
       });
-    }, []);
+    }, [captureFreezeFrame]);
 
     // notify on initial fallback
     useEffect(() => {
@@ -299,6 +442,9 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
 
     // ---- mode transitions ----
     const enterVod = useCallback((targetMs: number) => {
+      // Entering (or re-anchoring) VOD unmounts the realtime canvas / rebuilds the dash player,
+      // leaving an empty <video> until the first segment decodes; hold the current frame over it.
+      captureFreezeFrame();
       const { anchorMs, seekOffsetSec } = chooseVodAnchor({
         targetMs,
         windowSec: cfgRef.current.vodWindowSec,
@@ -311,13 +457,16 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
       setVodSeekOffsetSec(seekOffsetSec);
       setCurrentWallClockMs(targetMs);
       setMode("vod");
-    }, []);
+    }, [captureFreezeFrame]);
 
     const goLive = useCallback(() => {
       if (playbackController && playbackController.state.mode !== "live") {
         playbackController.goLive();
         return;
       }
+      // VOD → live swaps the <video> for a canvas (realtime) or rebuilds dash (buffered);
+      // hold the current frame over the stage until live frames arrive.
+      if (modeRef.current === "vod") captureFreezeFrame();
       desiredPlayingRef.current = true;
       seekTargetRef.current = null;
       lastShownWallClockRef.current = null;
@@ -329,7 +478,7 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
       setCurrentWallClockMs(null);
       setPlaying(true);
       setMode("live");
-    }, [playbackController]);
+    }, [captureFreezeFrame, playbackController]);
 
     const seekTo = useCallback(
       (targetMs: number) => {
@@ -1156,7 +1305,39 @@ export const RhombusPlayer = forwardRef<RhombusPlayerHandle, RhombusPlayerProps>
             }}
           >
             {child}
+            {freezeFrameUrl != null && (
+              <img
+                src={freezeFrameUrl}
+                alt=""
+                aria-hidden="true"
+                draggable={false}
+                data-rhombus-freeze-frame
+                style={{
+                  ...mediaStyle,
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  pointerEvents: "none",
+                }}
+              />
+            )}
           </div>
+          {/* A frozen frame reads as "paused" on a static scene, so playing transitions get a
+              loading cue — but never on pause itself. Visibility derives from existing state
+              (`playing` flips in the same batch as the capture on pause/goLive), so the indicator
+              adds no renders of its own; the spin is pure CSS. With a controller, the raw
+              `state.playing` is used because the internal `playing` intentionally flickers during
+              shared-buffering sync (waiting → pause → canplay → play) and would blink the
+              indicator mid-load. Outside the transform div so zoom/pan never scales it. */}
+          {freezeFrameUrl != null &&
+            (playbackController ? playbackController.state.playing : playing) && (
+            <div
+              className="rhombus-player-loading-indicator"
+              data-rhombus-loading-indicator
+              role="status"
+              aria-label="Loading video"
+            />
+          )}
         </div>
 
         <RhombusPlayerControls
