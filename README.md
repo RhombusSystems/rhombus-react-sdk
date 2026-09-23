@@ -206,7 +206,8 @@ Before testing, confirm:
 2. The A100/DR40 has an **Enterprise** device license, its speaker is enabled, and it is online.
 3. The federated token is minted for the browser's deployed domain.
 4. The page is served over HTTPS (or localhost), microphone access is allowed by the browser,
-   operating system, and iframe policy, and the media/worker hosts are allowed by CSP.
+   operating system, and iframe policy, and the media/worker hosts are allowed by CSP (including `worker-src blob:` and
+   `script-src 'wasm-unsafe-eval'` for the Opus decoder).
 5. The user explicitly unmutes listening audio and starts talkback from a click, tap, or
    keyboard gesture so browser media activation succeeds.
 
@@ -2895,13 +2896,20 @@ subsystems. A restrictive deployment policy should explicitly allow:
   Rhombus media-URI resolution;
 - `media-src` to the DASH manifest/segment hosts used by video and historical audio;
 - `worker-src blob:` for the worker-backed Opus decoder;
+- `script-src 'wasm-unsafe-eval'` (or on `default-src` when you have no `script-src`) so that
+  worker can compile its bundled WebAssembly decoder. The worker is started from a `blob:` URL,
+  so it inherits the page's CSP. Without this keyword, live A100/DR40 audio and Safari/iOS
+  historical audio fail with a CSP violation that can look like a CORS error, while localhost
+  (which usually sends no CSP) keeps working. `'wasm-unsafe-eval'` permits only WebAssembly
+  compilation; it does not re-enable `eval()`, `new Function()`, or string timers. Do **not**
+  add `'unsafe-eval'` instead;
 - microphone access in the page's `Permissions-Policy` and, when embedded, the iframe's
   `allow="microphone"` attribute; and
 - HTTPS for every non-localhost deployment.
 
 The talkback capture path creates an AudioWorklet module from a short-lived blob URL. When a
 policy or browser blocks that worklet, the SDK falls back to `ScriptProcessorNode`; the Opus
-playback decoder still requires blob workers. Prefer adding the narrow directives above over
+playback decoder still requires blob workers and `'wasm-unsafe-eval'`. Prefer adding the narrow directives above over
 loosening the entire CSP, and test the final production policy in every supported browser.
 
 Do not request microphone access during page load. `RhombusTalkback` intentionally waits for
@@ -2947,7 +2955,7 @@ unexported deep import paths to work around SSR; they are not part of the packag
 | **Audio says Ready or shows time but is silent**     | Audio starts muted. Click Unmute (or call `setMuted(false)` directly in a user gesture), then verify volume, OS output device, and tab/site audio permissions. |
 | **Audio media response has no usable WAN/LAN URI**   | The UUID is the wrong device type, inaccessible to this organization, or has no URI for the chosen network. Use an A100 audio-gateway UUID or DR40 device UUID and verify `connectionMode`. |
 | **Audio remains Connecting**                         | Check the live WebSocket in DevTools, federated query parameters, CSP `connect-src`, proxy response, and whether the browser can reach the selected WAN/LAN host. |
-| **Historical audio fails only on Safari/iOS**        | The decoded fallback must fetch WASM and Rhombus Opus segments. Allow worker/WASM assets and segment hosts in CSP/CORS, and confirm token query parameters reach each segment request. |
+| **Historical audio fails only on Safari/iOS**        | The decoded fallback fetches Rhombus Opus segments and decodes them in a blob worker with bundled WASM (no separate `.wasm` fetch). Allow `worker-src blob:`, `script-src 'wasm-unsafe-eval'`, and the segment hosts in CSP/CORS, and confirm token query parameters reach each segment request. |
 | **Duplicate or echoing DR40 audio**                  | Pair `RhombusPlayer` and `RhombusAudioPlayer` with the same DR40 UUID and the same controller. Matching buffered/VOD video then owns embedded audio automatically. |
 | **404 on `/api/audio-talkback-capabilities`**        | This is an application-owned proxy route, not a browser-callable Rhombus endpoint. Implement it, verify `apiOverrideBaseUrl`/`paths.audioTalkbackCapabilities`, and restart any long-running backend process after deploying the route. |
 | **Talkback says Role lacks device access**           | The API key behind the capability proxy cannot access this device through its assigned permission group, or the UUID is wrong. Use the same role/device scope expected in Console. |
