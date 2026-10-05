@@ -9,6 +9,8 @@ Your Rhombus **API key never ships to the browser**. Everything is built around 
 
 > **Version:** this guide tracks `@rhombussystems/react` **2.2.0**. React **18+**.
 
+**Documentation:** <https://developer.rhombus.com/implementations/react-sdk>
+
 ---
 
 ## Contents
