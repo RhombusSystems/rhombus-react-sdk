@@ -4,6 +4,7 @@
   "description": "React components for Rhombus video, audio playback, and two-way talkback",
   "license": "MIT",
   "author": "Rhombus Systems",
+  "homepage": "https://developer.rhombus.com/implementations/react-sdk",
   "repository": {
     "type": "git",
     "url": "https://github.com/RhombusSystems/rhombus-react-sdk.git"
